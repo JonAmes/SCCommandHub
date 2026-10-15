@@ -177,6 +177,21 @@
 .mining-scan-metrics strong { color: var(--ink); font: 9px var(--mono); }
 .mining-scan-composition-summary { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
 .mining-scan-mineral { padding: 4px 6px; border: 1px solid var(--line); color: var(--muted); font-size: 8px; }
+.scan-reader-section { margin-bottom: 14px; }
+.scan-reader-buttons { display: flex; flex-wrap: wrap; gap: 8px; }
+.scan-reader-file { position: relative; display: inline-flex; align-items: center; cursor: pointer; }
+.scan-reader-file input { position: absolute; width: 1px; height: 1px; opacity: 0; pointer-events: none; }
+.scan-reader-preview { position: relative; margin: 0 14px; border: 1px solid var(--line); background: #000; line-height: 0; }
+.scan-reader-preview video, .scan-reader-preview img { display: block; width: 100%; height: auto; max-height: 70vh; object-fit: contain; }
+.scan-reader-overlay { position: absolute; inset: 0; cursor: crosshair; touch-action: none; }
+.scan-reader-region { position: absolute; border: 2px solid var(--lime); background: rgb(217 247 107 / 12%); box-shadow: 0 0 0 9999px rgb(0 0 0 / 35%); pointer-events: none; }
+.scan-reader-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; padding: 12px 14px; }
+.scan-reader-auto { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); font-size: 9px; }
+.scan-reader-status { color: var(--muted); font-size: 9px; }
+.scan-reader-result { display: grid; gap: 12px; margin: 0 14px 14px; padding: 12px; border: 1px solid var(--line); }
+.scan-reader-result-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; color: var(--muted); font-size: 8px; }
+.scan-reader-result details { color: var(--muted); font-size: 8px; }
+.scan-reader-result pre { max-height: 180px; overflow: auto; margin: 6px 0 0; white-space: pre-wrap; font: 9px var(--mono); }
 .section-toolbar { min-height: 58px; display: flex; align-items: center; justify-content: space-between; gap: 15px; padding: 10px 15px; border-bottom: 1px solid var(--line); }
 .section-toolbar h2 { margin: 0; font-size: 13px; font-weight: 600; }
 .section-toolbar > div > span { display: block; margin-top: 3px; color: #8a958c; font-size: 9px; }
@@ -671,6 +686,8 @@
 .hangar-toolbar { display: flex; align-items: flex-end; gap: 13px; padding: 13px 15px; background: #fff; border: 1px solid var(--line); }
 .hangar-toolbar .control-group { flex: 1; max-width: 520px; }
 .hangar-toolbar .primary-button { height: 31px; white-space: nowrap; }
+.hangar-import-input { display: none; }
+.hangar-toolbar .hangar-import-button { height: 31px; white-space: nowrap; }
 .hangar-toolbar > .table-label { margin: 0 0 9px auto; }
 .active-ship-panel { display: flex; justify-content: space-between; align-items: center; gap: 25px; margin-top: 14px; padding: 16px 18px; background: #eaf0e3; border-left: 3px solid var(--lime); }
 .active-ship-details { flex: 0 0 auto; white-space: nowrap; }
@@ -699,9 +716,13 @@
 .hangar-ship-image { width: 72px; height: 48px; flex: 0 0 auto; display: grid; place-items: center; overflow: hidden; background: #f0f3ed; color: #778575; font-size: 23px; }
 .hangar-ship-image img { width: 100%; height: 100%; object-fit: cover; }
 .hangar-ship-info { min-width: 0; display: flex; flex-direction: column; gap: 3px; }
-.hangar-ship-info strong { color: #354039; font-size: 11px; }
+.hangar-ship-info strong { display: flex; align-items: center; flex-wrap: wrap; gap: 7px; color: #354039; font-size: 11px; }
 .hangar-ship-info span, .hangar-ship-info small { color: #879188; font-size: 9px; }
 .hangar-ship-info small { font-family: var(--mono); }
+.permanent-tag { padding: 2px 4px; border: 1px solid #e5d6a8; color: #80651e !important; background: #faf5e4; font: 7px var(--mono) !important; line-height: 1.2; }
+.permanent-toggle { width: 29px; height: 29px; flex: 0 0 29px; display: grid; place-items: center; padding: 0; border: 1px solid var(--line); color: #8a9489; background: #fff; font-size: 17px; line-height: 1; cursor: pointer; }
+.permanent-toggle:hover, .permanent-toggle.is-permanent { border-color: #dfcf9f; color: #80651e; background: #faf5e4; }
+.permanent-toggle:focus-visible { outline: 2px solid var(--lime); outline-offset: 2px; }
 .active-ship-tag { margin-left: auto; color: #557439; font: 8px var(--mono); }
 .hangar-ship > .secondary-button { margin-left: auto; white-space: nowrap; }
 .hangar-remove { margin-left: 3px; }

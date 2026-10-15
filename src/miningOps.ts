@@ -35,7 +35,6 @@ function isRockScan(value: unknown): value is RockScan {
     && (scan.resistancePercent ?? 101) <= 100
     && Number.isFinite(scan.instabilityPercent)
     && (scan.instabilityPercent ?? -1) >= 0
-    && (scan.instabilityPercent ?? 101) <= 100
     && Array.isArray(scan.composition)
     && scan.composition.every((part) => typeof part.commodity === 'string' && part.commodity.length > 0 && Number.isFinite(part.percent) && part.percent > 0 && part.percent <= 100)
     && typeof scan.scannedAt === 'string'
@@ -70,14 +69,15 @@ export function addRockScan(state: MiningOpsState, scan: NewRockScan): { state?:
   if (!location) return { error: 'Enter the scan location.' }
   if (!Number.isFinite(scan.massKg) || scan.massKg <= 0) return { error: 'Mass must be greater than zero.' }
   if (!Number.isFinite(scan.resistancePercent) || scan.resistancePercent < 0 || scan.resistancePercent > 100) return { error: 'Resistance must be between 0 and 100%.' }
-  if (!Number.isFinite(scan.instabilityPercent) || scan.instabilityPercent < 0 || scan.instabilityPercent > 100) return { error: 'Instability must be between 0 and 100%.' }
+  if (!Number.isFinite(scan.instabilityPercent) || scan.instabilityPercent < 0) return { error: 'Instability must be zero or greater.' }
 
   const composition = scan.composition
     .map((part) => ({ commodity: part.commodity.trim(), percent: part.percent }))
     .filter((part) => part.commodity && Number.isFinite(part.percent) && part.percent > 0)
   if (!composition.length) return { error: 'Add at least one mineral composition reading.' }
   const totalPercent = composition.reduce((sum, part) => sum + part.percent, 0)
-  if (totalPercent > 100) return { error: 'Mineral composition cannot exceed 100%.' }
+  // Scanner percentages are rounded, so allow a small overshoot.
+  if (totalPercent > 100.05) return { error: 'Mineral composition cannot exceed 100%.' }
 
   const entry: RockScan = {
     id: createId(),

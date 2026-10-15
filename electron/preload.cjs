@@ -15,6 +15,8 @@ contextBridge.exposeInMainWorld('starCitizenBridge', {
     ipcRenderer.on('star-citizen:game-log-status', listener)
     return () => ipcRenderer.removeListener('star-citizen:game-log-status', listener)
   },
+  listScreenSources: () => ipcRenderer.invoke('screen-reader:list-sources'),
+  selectScreenSource: (sourceId) => ipcRenderer.invoke('screen-reader:select-source', sourceId),
   startSyncHost: () => ipcRenderer.invoke('sync:host-start'),
   rotateSyncPairingCode: () => ipcRenderer.invoke('sync:host-rotate-code'),
   stopSyncHost: () => ipcRenderer.invoke('sync:host-stop'),

@@ -1,5 +1,5 @@
 const path = require('node:path')
-const { app, BrowserWindow, dialog, ipcMain } = require('electron')
+const { app, BrowserWindow, desktopCapturer, dialog, ipcMain, session } = require('electron')
 const { detectGameInstallations, normalizeGameRoot } = require('./gameDetection.cjs')
 const { startGameLogMonitor } = require('./gameLogMonitor.cjs')
 const { createSyncHost } = require('./syncServer.cjs')
@@ -7,6 +7,7 @@ const { createTailscaleServe } = require('./tailscaleServe.cjs')
 
 let gameLogMonitor
 let mainWindow
+let screenReaderSourceId = null
 const syncHost = createSyncHost({
   port: 0,
   onPairRequest: (request) => {
@@ -48,6 +49,16 @@ ipcMain.handle('star-citizen:watch-log', (event, request) => {
 })
 ipcMain.handle('star-citizen:stop-log', () => {
   stopGameLogMonitor()
+  return true
+})
+ipcMain.handle('screen-reader:list-sources', async (event) => {
+  if (event.senderFrame !== event.sender.mainFrame) return []
+  const sources = await desktopCapturer.getSources({ types: ['screen', 'window'], thumbnailSize: { width: 0, height: 0 } })
+  return sources.map((source) => ({ id: source.id, name: source.name }))
+})
+ipcMain.handle('screen-reader:select-source', (event, sourceId) => {
+  if (event.senderFrame !== event.sender.mainFrame) return false
+  screenReaderSourceId = typeof sourceId === 'string' && sourceId.length < 256 ? sourceId : null
   return true
 })
 ipcMain.handle('sync:host-start', async () => {
@@ -112,6 +123,12 @@ function createWindow() {
 }
 
 app.whenReady().then(() => {
+  session.defaultSession.setDisplayMediaRequestHandler(async (request, callback) => {
+    if (!mainWindow || request.frame !== mainWindow.webContents.mainFrame) return callback({})
+    const sources = await desktopCapturer.getSources({ types: ['screen', 'window'], thumbnailSize: { width: 0, height: 0 } })
+    const source = sources.find((item) => item.id === screenReaderSourceId) ?? sources.find((item) => item.id.startsWith('screen:'))
+    callback(source ? { video: source } : {})
+  })
   createWindow()
 
   app.on('activate', () => {

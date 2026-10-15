@@ -12,6 +12,7 @@ export type HangarShip = {
   cargoCapacity: number
   photoUrl: string
   addedAt: string
+  permanent?: boolean
   gameModelSlug?: string
 }
 

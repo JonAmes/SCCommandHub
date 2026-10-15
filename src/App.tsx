@@ -6,12 +6,14 @@ import { Share } from '@capacitor/share'
 import { previewSyncMerge, persistSyncSnapshot, validateSyncSnapshot, type SyncMergePreview, type SyncProposal, type SyncSnapshot } from './appSync'
 import { disconnectSyncClient, getSyncClientPairing, pairSyncClient, uploadSyncSnapshot, type SyncClientPairing } from './syncClient'
 import { SyncSettings } from './SyncSettings'
+import { ScanScreenReader } from './ScanScreenReader'
 import './App.css'
 import { clearUexCache, getUexData, readNumber, readText, type UexRow } from './uex'
 import { captureMarketPriceSnapshot, getMarketTickerEntries, getMarketTickerHistoryStatus, loadMarketPriceHistory, MARKET_SNAPSHOT_INTERVAL_MS, saveMarketPriceHistory, type MarketPriceSnapshot, type PriceChange } from './marketTicker'
 import { CONTAINER_SIZES, getContainerSelection, isContainerSizedQuantity } from './containerSizes'
 import { createBankAccount, getAccountHeldQuantity, getCommodityHoldings, getRealizedProfitLoss, loadFinanceState, previewCrewPayouts, recordAccountAdjustment, recordGameStoreTransaction, recordTrade, recordVehiclePurchase, saveFinanceState, transferFunds, type AccountTransactionKind, type BankAccount, type FinanceState, type GameStoreTransaction, type LedgerEntry, type NewTrade, type TradeSide } from './finance'
 import { addDetectedShip, addShip, clearHangarCargo, getAssignedQuantity, getShipCargoQuantity, getShipCargoUsed, getUnassignedQuantity, loadCargo, loadHangarState, removeShip, saveHangarState, setActiveShip, unloadCargo, type HangarShip, type HangarState } from './hangar'
+import { findVehicleForModelCode, importShipsFromJson } from './hangarImport'
 import { addCrewMember, addCrewRole, assignCrewRole, getCrewSharePercent, loadCrewState, removeCrewMember, removeCrewRole, saveCrewState, updateCrewMemberPayoutAccount, updateCrewMemberShare, updateCrewRoleDefault, type CrewMember, type CrewRole, type CrewState } from './crew'
 import { clearRoutePlans, createPlannedRoute, loadRoutePlans, saveRoutePlans, type NewPlannedRoute, type PlannedRoute } from './routePlanner'
 import { addRockScan, loadMiningOpsState, removeRockScan, saveMiningOpsState, type MiningOpsState, type NewRockScan, type RockScan } from './miningOps'
@@ -63,6 +65,8 @@ declare global {
       rejectSyncPairing?: (requestId: string) => Promise<boolean>
       onSyncPairRequest?: (callback: (request: SyncPairRequest) => void) => () => void
       onSyncProposal?: (callback: (proposal: SyncProposal) => void) => () => void
+      listScreenSources?: () => Promise<{ id: string; name: string }[]>
+      selectScreenSource?: (sourceId: string | null) => Promise<boolean>
     }
   }
 }
@@ -87,7 +91,7 @@ function getStoredGameRoots() {
 function findVehicleForGameModel(modelSlug: string, vehicles: UexRow[]) {
   const modelTokens = modelSlug.split('_').slice(1).map((part) => part.toLowerCase())
   return vehicles
-    .map((vehicle) => ({ vehicle, tokens: (readText(vehicle, 'name', 'vehicle_name').toLowerCase().match(/[a-z0-9]+/g) ?? []) }))
+    .map((vehicle) => ({ vehicle, tokens: (readText(vehicle, 'name', 'vehicle_name').toLowerCase().match(/[a-z0-9]+/g) ?? []) as string[] }))
     .filter(({ tokens }) => tokens.length > 0 && tokens.every((token) => modelTokens.includes(token)))
     .sort((left, right) => right.tokens.length - left.tokens.length)[0]?.vehicle
 }
@@ -1123,6 +1127,31 @@ function App() {
     setSelectedVehicleId('')
   }
 
+  async function importHangarShips(file: File) {
+    try {
+      const result = importShipsFromJson(hangarState, await file.text(), (ship) => {
+        const modelCode = readText(ship, 'ship_code')
+        return modelCode ? findVehicleForModelCode(modelCode, vehicles) : undefined
+      })
+      if (!result.state) {
+        setNotice(result.error || 'Unable to import ships.')
+        return
+      }
+      if (!result.added && !result.updated) {
+        setNotice(`No new ships imported. ${result.skipped} duplicate or invalid entries skipped.`)
+        return
+      }
+      const skippedMessage = result.skipped ? ` ${result.skipped} duplicate or invalid entries skipped.` : ''
+      const changes = [
+        result.added ? `${result.added} ${result.added === 1 ? 'ship' : 'ships'} added` : '',
+        result.updated ? `${result.updated} existing ${result.updated === 1 ? 'ship' : 'ships'} corrected` : '',
+      ].filter(Boolean).join(', ')
+      persistHangar(result.state, `Hangar updated from ${file.name}: ${changes}.${skippedMessage}`)
+    } catch {
+      setNotice(`Unable to read ${file.name}.`)
+    }
+  }
+
   function confirmVehiclePurchase(vehicle: UexRow, offer: UexRow, accountId: string) {
     const vehicleId = readText(vehicle, 'id')
     const vehicleName = readText(vehicle, 'name', 'vehicle_name')
@@ -1150,6 +1179,16 @@ function App() {
 
   function updateActiveShip(shipId: string | null) {
     persistHangar(setActiveShip(hangarState, shipId), shipId ? 'Active ship updated.' : 'No active ship selected.')
+  }
+
+  function updateShipPermanent(shipId: string, isPermanent: boolean) {
+    const ship = hangarState.ships.find((item) => item.id === shipId)
+    if (!ship) return
+    const next = {
+      ...hangarState,
+      ships: hangarState.ships.map((item) => item.id === shipId ? { ...item, permanent: isPermanent } : item),
+    }
+    persistHangar(next, `${ship.name} ${isPermanent ? 'marked as permanent' : 'no longer marked as permanent'}.`)
   }
 
   function removeHangarShip(ship: HangarShip) {
@@ -1301,7 +1340,7 @@ function App() {
             onDismissGameTransaction={dismissGameLogTransaction}
           />}
           {section === 'holdings' && <HoldingsView holdings={getCommodityHoldings(financeState)} prices={prices} state={datasetsState.commodities_prices_all} search={search} activeShip={activeShip} hangarState={hangarState} financeState={financeState} activeShipFree={activeShipFree} onAllocate={changeCargoAllocation} onSell={(commodity, quantity) => openTradeRecord('sell', undefined, commodity, quantity)} />}
-          {section === 'hangar' && <HangarView hangarState={hangarState} candidates={hangarCandidates} vehicles={vehicles} purchaseRows={datasetsState.vehicles_purchases_prices_all.rows} terminals={terminals} selectedVehicleId={selectedVehicleId} setSelectedVehicleId={setSelectedVehicleId} onAdd={addHangarShip} onSetActive={updateActiveShip} onRemove={removeHangarShip} />}
+          {section === 'hangar' && <HangarView hangarState={hangarState} candidates={hangarCandidates} vehicles={vehicles} purchaseRows={datasetsState.vehicles_purchases_prices_all.rows} terminals={terminals} selectedVehicleId={selectedVehicleId} setSelectedVehicleId={setSelectedVehicleId} onAdd={addHangarShip} onImport={importHangarShips} onSetActive={updateActiveShip} onSetPermanent={updateShipPermanent} onRemove={removeHangarShip} />}
           {section === 'crew' && <CrewManagerView crewState={crewState} transactions={financeState.transactions} accounts={financeState.accounts} search={search} onAdd={createCrewMember} onAssignRole={assignMemberRole} onUpdateShare={updateCrewShare} onUpdatePayoutAccount={updateCrewPayoutAccount} onRemove={deleteCrewMember} onAddRole={createCrewRole} onUpdateRoleDefault={changeCrewRoleDefault} onRemoveRole={deleteCrewRole} />}
           {section === 'commodities' && <CommodityView rows={commodities.length ? commodities : prices} state={datasetsState.commodities.status === 'ready' ? datasetsState.commodities : datasetsState.commodities_prices_all} search={search} />}
           {section === 'ships' && <VehicleView
@@ -2205,7 +2244,7 @@ function groupByManufacturer<T>(items: T[], getManufacturer: (item: T) => string
   return [...groups.entries()]
 }
 
-function HangarView({ hangarState, candidates, vehicles, purchaseRows, terminals, selectedVehicleId, setSelectedVehicleId, onAdd, onSetActive, onRemove }: {
+function HangarView({ hangarState, candidates, vehicles, purchaseRows, terminals, selectedVehicleId, setSelectedVehicleId, onAdd, onImport, onSetActive, onSetPermanent, onRemove }: {
   hangarState: HangarState
   candidates: UexRow[]
   vehicles: UexRow[]
@@ -2214,17 +2253,36 @@ function HangarView({ hangarState, candidates, vehicles, purchaseRows, terminals
   selectedVehicleId: string
   setSelectedVehicleId: (value: string) => void
   onAdd: () => void
+  onImport: (file: File) => void
   onSetActive: (shipId: string | null) => void
+  onSetPermanent: (shipId: string, isPermanent: boolean) => void
   onRemove: (ship: HangarShip) => void
 }) {
   const [detailShip, setDetailShip] = useState<HangarShip | null>(null)
+  const importInput = useRef<HTMLInputElement>(null)
   const { ships, activeShipId } = hangarState
   const activeShip = ships.find((ship) => ship.id === activeShipId)
   const availableShips = candidates.filter((vehicle) => !ships.some((ship) => ship.vehicleId === readText(vehicle, 'id')))
   const candidateGroups = groupByManufacturer(availableShips, (vehicle) => readText(vehicle, 'company_name') || 'Unknown manufacturer', (vehicle) => readText(vehicle, 'name'))
   const shipGroups = groupByManufacturer(ships, (ship) => ship.manufacturer || 'Unknown manufacturer', (ship) => ship.name)
+  function getShipVehicle(ship: HangarShip) {
+    return vehicles.find((vehicle) => readText(vehicle, 'id') === ship.vehicleId)
+      ?? findVehicleForModelCode(ship.vehicleId, vehicles)
+  }
+  function getShipCapacity(ship: HangarShip) {
+    return ship.cargoCapacity || readNumber(getShipVehicle(ship) ?? {}, 'scu')
+  }
+  function getShipCapacityLabel(ship: HangarShip) {
+    const vehicle = getShipVehicle(ship)
+    if (ship.cargoCapacity > 0) return `${formatQuantity(ship.cargoCapacity)} SCU cargo capacity`
+    if (vehicle) return `${formatQuantity(readNumber(vehicle, 'scu'))} SCU cargo capacity`
+    return 'No cargo capacity listed'
+  }
+  const activeVehicle = activeShip ? getShipVehicle(activeShip) : undefined
+  const activePhotoUrl = activeShip?.photoUrl || readText(activeVehicle ?? {}, 'url_photo')
+  const activeCargoCapacity = activeShip ? getShipCapacity(activeShip) : 0
   const detailVehicle = detailShip
-    ? vehicles.find((vehicle) => readText(vehicle, 'id') === detailShip.vehicleId) ?? {
+    ? getShipVehicle(detailShip) ?? {
       id: detailShip.vehicleId,
       name: detailShip.name,
       company_name: detailShip.manufacturer,
@@ -2241,22 +2299,29 @@ function HangarView({ hangarState, candidates, vehicles, purchaseRows, terminals
     <div className="hangar-toolbar">
       <label className="control-group"><span>ADD FROM UEX SHIP REGISTRY</span><select value={selectedVehicleId} onChange={(event) => setSelectedVehicleId(event.target.value)} disabled={!availableShips.length}><option value="">{availableShips.length ? 'Select a ship' : 'All listed ships are in your hangar'}</option>{candidateGroups.map(([manufacturer, group]) => <optgroup key={manufacturer} label={manufacturer}>{group.map((vehicle) => <option key={readText(vehicle, 'id')} value={readText(vehicle, 'id')}>{readText(vehicle, 'name')} · {readNumber(vehicle, 'scu')} SCU</option>)}</optgroup>)}</select></label>
       <button className="primary-button" type="button" disabled={!selectedVehicleId} onClick={onAdd}>+ Add to hangar</button>
+      <input ref={importInput} className="hangar-import-input" type="file" accept=".json,application/json" aria-label="Import ships from JSON file" onChange={(event) => { const file = event.currentTarget.files?.[0]; if (file) onImport(file); event.currentTarget.value = '' }} />
+      <button className="secondary-button hangar-import-button" type="button" title="Import ships from a JSON file" onClick={() => importInput.current?.click()}>Import ships JSON</button>
       <span className="table-label">{ships.length} {ships.length === 1 ? 'SHIP' : 'SHIPS'}</span>
     </div>
     {activeShip ? <section className="active-ship-panel">
-      <div className="active-ship-identity">{activeShip.photoUrl ? <img src={activeShip.photoUrl} alt="" referrerPolicy="no-referrer" /> : <div className="ship-placeholder" aria-hidden="true">▰</div>}<div><span className="eyebrow">ACTIVE SHIP</span><h2>{activeShip.name}</h2><p>{activeShip.manufacturer || 'Manufacturer not listed'}</p></div></div>
-      <div className="ship-capacity"><span>CARGO HOLD</span><strong>{formatQuantity(getShipCargoUsed(hangarState, activeShip.id))} / {formatQuantity(activeShip.cargoCapacity)} SCU</strong><div className="capacity-track"><i style={{ width: `${activeShip.cargoCapacity ? Math.min(100, getShipCargoUsed(hangarState, activeShip.id) / activeShip.cargoCapacity * 100) : 0}%` }} /></div></div>
+      <div className="active-ship-identity">{activePhotoUrl ? <img src={activePhotoUrl} alt="" referrerPolicy="no-referrer" /> : <div className="ship-placeholder" aria-hidden="true">▰</div>}<div><span className="eyebrow">ACTIVE SHIP</span><h2>{activeShip.name}</h2><p>{activeShip.manufacturer || readText(activeVehicle ?? {}, 'company_name') || 'Manufacturer not listed'}</p></div></div>
+      <div className="ship-capacity"><span>CARGO HOLD</span><strong>{formatQuantity(getShipCargoUsed(hangarState, activeShip.id))} / {formatQuantity(activeCargoCapacity)} SCU</strong><div className="capacity-track"><i style={{ width: `${activeCargoCapacity ? Math.min(100, getShipCargoUsed(hangarState, activeShip.id) / activeCargoCapacity * 100) : 0}%` }} /></div></div>
       <button className="secondary-button active-ship-details" type="button" onClick={() => showShipDetails(activeShip)}>Full ship details</button>
     </section> : <div className="hangar-empty"><strong>No active ship selected</strong><span>Add a ship from the UEX registry, then set it active to manage its cargo hold.</span></div>}
     <section className="data-section hangar-section"><div className="section-toolbar"><div><h2>Personal fleet</h2><span>Ship specifications are from UEX; cargo assignments are stored locally.</span></div><span className="table-label">LOCAL HANGAR</span></div>
-      <div className="hangar-list">{shipGroups.map(([manufacturer, group]) => <div className="hangar-manufacturer-group" key={manufacturer}><h3>{manufacturer}</h3>{group.map((ship) => <article className={`hangar-ship ${ship.id === activeShipId ? 'is-active' : ''}`} key={ship.id}>
+      <div className="hangar-list">{shipGroups.map(([manufacturer, group]) => <div className="hangar-manufacturer-group" key={manufacturer}><h3>{manufacturer}</h3>{group.map((ship) => {
+        const vehicle = getShipVehicle(ship)
+        const photoUrl = ship.photoUrl || readText(vehicle ?? {}, 'url_photo')
+        return <article className={`hangar-ship ${ship.id === activeShipId ? 'is-active' : ''}`} key={ship.id}>
         <button className="hangar-ship-details" type="button" onClick={() => showShipDetails(ship)} aria-label={`View details for ${ship.name}`}>
-          <span className="hangar-ship-image">{ship.photoUrl ? <img src={ship.photoUrl} alt="" loading="lazy" referrerPolicy="no-referrer" /> : <span aria-hidden="true">▰</span>}</span>
-          <span className="hangar-ship-info"><strong>{ship.name}</strong><small>{ship.cargoCapacity > 0 ? `${formatQuantity(ship.cargoCapacity)} SCU cargo capacity` : 'No cargo capacity listed'}</small></span>
+          <span className="hangar-ship-image">{photoUrl ? <img src={photoUrl} alt="" loading="lazy" referrerPolicy="no-referrer" /> : <span aria-hidden="true">▰</span>}</span>
+          <span className="hangar-ship-info"><strong>{ship.name}{ship.permanent && <span className="permanent-tag">PERMANENT</span>}</strong><small>{getShipCapacityLabel(ship)}</small></span>
         </button>
+        <button className={`permanent-toggle ${ship.permanent ? 'is-permanent' : ''}`} type="button" aria-label={`${ship.permanent ? 'Unmark' : 'Mark'} ${ship.name} as permanent`} aria-pressed={ship.permanent === true} title={ship.permanent ? 'Unmark permanent ship' : 'Mark permanent ship'} onClick={() => onSetPermanent(ship.id, ship.permanent !== true)}>{ship.permanent ? '★' : '☆'}</button>
         {ship.id === activeShipId ? <span className="active-ship-tag">ACTIVE</span> : <button className="secondary-button" type="button" onClick={() => onSetActive(ship.id)}>Set active</button>}
         <button className="remove-account hangar-remove" type="button" onClick={() => onRemove(ship)} aria-label={`Remove ${ship.name} from hangar`} title="Remove ship">×</button>
-      </article>)}</div>)}{!ships.length && <div className="accounts-empty"><strong>Your hangar is empty</strong><span>Add a ship using the UEX registry above.</span></div>}</div>
+      </article>
+      })}</div>)}{!ships.length && <div className="accounts-empty"><strong>Your hangar is empty</strong><span>Add a ship using the UEX registry above.</span></div>}</div>
     </section>
     <div className="disclaimer-strip"><span className="disclaimer-icon">i</span><span>UEX cargo capacity is a published reference. This app does not read a live in-game ship hold.</span></div>
     {detailShip && detailVehicle && <VehicleDetailsDialog vehicle={detailVehicle} offers={purchaseRows.filter((offer) => readText(offer, 'id_vehicle') === detailShip.vehicleId)} terminals={terminals} hangarShip={detailShip} isActive={detailShip.id === activeShipId} cargoUsed={getShipCargoUsed(hangarState, detailShip.id)} cargoByCommodity={hangarState.cargoByShip[detailShip.id] ?? {}} onClose={() => setDetailShip(null)} />}
@@ -2871,7 +2936,7 @@ function MiningView({ prices, commodities, state, methods, methodsState, yields,
   const capacityRows = capacities.filter((row) => !normalizedSearch || `${readText(row, 'terminal_name')} ${readText(row, 'star_system_name')} ${readText(row, 'planet_name')}`.toLocaleLowerCase().includes(normalizedSearch))
 
   return <>
-    <div className="module-note"><span className="note-mark">⌁</span><div><strong>Mining &amp; refinery tools</strong><p>Uses UEX commodity market listings and refinery reports. UEX does not provide live rock scans, so record scanner readings manually in the local scan log.</p></div></div>
+    <div className="module-note"><span className="note-mark">⌁</span><div><strong>Mining &amp; refinery tools</strong><p>Uses UEX commodity market listings and refinery reports. UEX does not provide live rock scans, so read them from your screen or record scanner readings manually in the local scan log.</p></div></div>
     <div className="finance-tabs mining-tool-tabs" role="tablist" aria-label="Mining tools">
       <button type="button" role="tab" aria-selected={tab === 'market'} className={tab === 'market' ? 'selected' : ''} onClick={() => setTab('market')}>Ore market</button>
       <button type="button" role="tab" aria-selected={tab === 'calculator'} className={tab === 'calculator' ? 'selected' : ''} onClick={() => setTab('calculator')}>Sale estimator</button>
@@ -2936,6 +3001,7 @@ function RockScanLog({ scans, minerals, onAdd, onRemove }: { scans: RockScan[]; 
   }
 
   return <>
+    <ScanScreenReader scans={scans} minerals={minerals} onAdd={onAdd} />
     <section className="data-section mining-scan-form-section">
       <div className="section-toolbar"><div><h2>Record a rock scan</h2><span>Enter the measurements shown by your in-game scanner.</span></div><span className="table-label">LOCAL SCAN LOG</span></div>
       <form className="mining-scan-form" onSubmit={submit}>
@@ -2943,7 +3009,7 @@ function RockScanLog({ scans, minerals, onAdd, onRemove }: { scans: RockScan[]; 
         <label><span>LOCATION</span><input value={location} onChange={(event) => setLocation(event.target.value)} placeholder="System, belt, or site" maxLength={100} required /></label>
         <label><span>MASS</span><div className="number-input"><input type="number" min="1" step="1" value={massKg} onChange={(event) => setMassKg(event.target.value)} required /><span>KG</span></div></label>
         <label><span>RESISTANCE</span><div className="number-input"><input type="number" min="0" max="100" step="0.1" value={resistancePercent} onChange={(event) => setResistancePercent(event.target.value)} required /><span>%</span></div></label>
-        <label><span>INSTABILITY</span><div className="number-input"><input type="number" min="0" max="100" step="0.1" value={instabilityPercent} onChange={(event) => setInstabilityPercent(event.target.value)} required /><span>%</span></div></label>
+        <label><span>INSTABILITY</span><div className="number-input"><input type="number" min="0" step="0.01" value={instabilityPercent} onChange={(event) => setInstabilityPercent(event.target.value)} required /><span>%</span></div></label>
         <div className="mining-scan-composition">
           <div className="mining-scan-composition-head"><div><span>MINERAL COMPOSITION</span><small>{compositionTotal.toFixed(1)}% recorded · maximum 100%</small></div><button className="text-button" type="button" onClick={addComposition}>+ Add mineral</button></div>
           {composition.map((part) => <div className="mining-scan-composition-row" key={part.id}>
@@ -2953,7 +3019,7 @@ function RockScanLog({ scans, minerals, onAdd, onRemove }: { scans: RockScan[]; 
           </div>)}
         </div>
         {error && <div className="form-error mining-scan-error" role="alert">{error}</div>}
-        <div className="mining-scan-submit"><span>Scan measurements are stored locally and are not read from the game.</span><button className="primary-button" type="submit" disabled={!minerals.length || compositionTotal > 100}>Save scan</button></div>
+        <div className="mining-scan-submit"><span>Manually entered scans are stored locally.</span><button className="primary-button" type="submit" disabled={!minerals.length || compositionTotal > 100}>Save scan</button></div>
       </form>
     </section>
     <section className="data-section mining-scan-history">
