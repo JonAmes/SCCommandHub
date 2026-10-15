@@ -1,0 +1,114 @@
+@import url('https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Space+Grotesk:wght@400;500;600;700&display=swap');
+
+:root {
+  font-family: 'Space Grotesk', 'Segoe UI', sans-serif;
+  color: var(--ink);
+  background: var(--canvas);
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  font-optical-sizing: auto;
+  font-weight: 400;
+
+  --ink: #202722;
+  --muted: #758078;
+  --quiet: #9ba49c;
+  --line: #e0e5df;
+  --surface: #fff;
+  --canvas: #f4f6f3;
+  --sidebar: #202923;
+  --sidebar-muted: #a3ada5;
+  --lime: #d9f76b;
+  --green: #35774e;
+  --red: #bd5c4a;
+  --focus: #85a82e;
+  --mono: 'DM Mono', Consolas, monospace;
+}
+
+:root[data-theme='amber'] {
+  --ink: #28241d;
+  --muted: #756c5e;
+  --quiet: #9b9182;
+  --line: #e5ded2;
+  --surface: #fffefa;
+  --canvas: #f6f2e9;
+  --sidebar: #29261f;
+  --sidebar-muted: #b7ae9f;
+  --lime: #efc36d;
+  --green: #35785e;
+  --red: #b45c49;
+  --focus: #9b6d16;
+}
+
+:root[data-theme='ice'] {
+  --ink: #202a32;
+  --muted: #71808b;
+  --quiet: #95a3ad;
+  --line: #dce5ea;
+  --surface: #fff;
+  --canvas: #f1f5f7;
+  --sidebar: #202b33;
+  --sidebar-muted: #a6b4bc;
+  --lime: #7bd3d0;
+  --green: #33766f;
+  --red: #b85d57;
+  --focus: #238b9b;
+}
+
+:root[data-theme='night'] {
+  color-scheme: dark;
+  --ink: #e3eded;
+  --muted: #a4b6b6;
+  --quiet: #7d9293;
+  --line: #2c3c3f;
+  --surface: #152023;
+  --canvas: #0d1518;
+  --sidebar: #080e11;
+  --sidebar-muted: #8ca0a3;
+  --lime: #61d4cf;
+  --green: #7ad5a1;
+  --red: #ff9287;
+  --focus: #81e5df;
+  --surface-raised: #1b292c;
+  --surface-inset: #10191c;
+  --surface-hover: #1c2d30;
+  --surface-accent: #193b3a;
+  --line-soft: #263639;
+  --border-input: #3a4d50;
+}
+
+:root[data-theme='redshift'] {
+  color-scheme: dark;
+  --ink: #f0e6e0;
+  --muted: #c0aaa3;
+  --quiet: #937f7a;
+  --line: #40302f;
+  --surface: #211819;
+  --canvas: #140f11;
+  --sidebar: #0d080b;
+  --sidebar-muted: #a38f89;
+  --lime: #ff8b77;
+  --green: #8dd3a1;
+  --red: #ff8674;
+  --focus: #ffad94;
+  --surface-raised: #302121;
+  --surface-inset: #191314;
+  --surface-hover: #322323;
+  --surface-accent: #48221f;
+  --line-soft: #382928;
+  --border-input: #59413e;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  min-width: 320px;
+  min-height: 100vh;
+}
+
+button, input, select { font: inherit; }
+button { color: inherit; }
+button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+::selection { color: var(--ink); background: var(--lime); }
