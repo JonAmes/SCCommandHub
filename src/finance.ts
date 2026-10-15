@@ -36,6 +36,7 @@ export type LedgerEntry = {
   crewShareTotal?: number
   crewShares?: CrewSharePayout[]
   sourceEventId?: string
+  heldCargo?: boolean
 }
 
 export type CrewSharePayout = {
@@ -93,6 +94,7 @@ function isTransaction(value: unknown): value is LedgerEntry {
     && (transaction.containerSize === undefined || CONTAINER_SIZES.some((size) => size === transaction.containerSize))
     && (transaction.containerCount === undefined || (Number.isInteger(transaction.containerCount) && transaction.containerCount > 0))
     && (transaction.sourceEventId === undefined || typeof transaction.sourceEventId === 'string')
+    && (transaction.heldCargo === undefined || typeof transaction.heldCargo === 'boolean')
     && (transaction.crewShares === undefined || (Array.isArray(transaction.crewShares) && transaction.crewShares.every((share) => {
       if (!share || typeof share !== 'object') return false
       const payout = share as Partial<CrewSharePayout>
@@ -390,9 +392,51 @@ export function recordAccountAdjustment(
   }
 }
 
+export type HeldCargoSale = { accountId: string; commodity: string; terminal: string; quantity: number; unitPrice: number; note?: string }
+
+// Sells mined/refined cargo that never entered the ledger as a purchase; quantities may be fractional SCU.
+export function recordHeldCargoSale(state: FinanceState, sale: HeldCargoSale, crewMembers: CrewMember[] = []): { state?: FinanceState; entry?: LedgerEntry; error?: string } {
+  if (!sale.commodity.trim() || !sale.terminal.trim()) return { error: 'Choose a commodity and sell location.' }
+  if (!Number.isFinite(sale.quantity) || sale.quantity <= 0) return { error: 'Enter the quantity sold.' }
+  if (!Number.isFinite(sale.unitPrice) || sale.unitPrice <= 0) return { error: 'Unit price must be greater than zero.' }
+  const account = state.accounts.find((item) => item.id === sale.accountId)
+  if (!account) return { error: 'Choose the account that received the payment.' }
+
+  const quantity = Math.round(sale.quantity * 100) / 100
+  const total = Math.round(quantity * sale.unitPrice * 100) / 100
+  const crewPreview = previewCrewPayouts(total, crewMembers, state.accounts, account.id)
+  if (crewPreview.error) return { error: crewPreview.error }
+  const entry: LedgerEntry = {
+    id: createId(),
+    accountId: account.id,
+    accountName: account.name,
+    side: 'sell',
+    commodity: sale.commodity.trim(),
+    terminal: sale.terminal.trim(),
+    quantity,
+    unitPrice: sale.unitPrice,
+    total,
+    note: sale.note?.trim() || 'Mined / refined cargo sale',
+    recordedAt: new Date().toISOString(),
+    heldCargo: true,
+    ...(crewPreview.payouts.length ? { crewShareTotal: crewPreview.crewShareTotal, crewShares: crewPreview.payouts } : {}),
+  }
+  const accountCredit = Math.round((total - crewPreview.crewShareTotal) * 100) / 100
+  return {
+    entry,
+    state: {
+      accounts: state.accounts.map((item) => {
+        const credit = (item.id === account.id ? accountCredit : 0) + crewPreview.payouts.filter((share) => share.accountId === item.id).reduce((sum, share) => sum + share.amount, 0)
+        return credit ? { ...item, balance: Math.round((item.balance + credit) * 100) / 100 } : item
+      }),
+      transactions: [entry, ...state.transactions],
+    },
+  }
+}
+
 export function getHeldQuantity(state: FinanceState, commodity: string) {
   return state.transactions.reduce((quantity, entry) => {
-    if (entry.commodity !== commodity) return quantity
+    if (entry.commodity !== commodity || entry.heldCargo) return quantity
     if (entry.side === 'buy') return quantity + entry.quantity
     if (entry.side === 'sell') return quantity - entry.quantity
     return quantity
@@ -402,7 +446,7 @@ export function getHeldQuantity(state: FinanceState, commodity: string) {
 export function getCommodityHoldings(state: FinanceState): CommodityHolding[] {
   const totals = new Map<string, { purchased: number; sold: number; purchaseValue: number }>()
   for (const entry of state.transactions) {
-    if (entry.side !== 'buy' && entry.side !== 'sell') continue
+    if ((entry.side !== 'buy' && entry.side !== 'sell') || entry.heldCargo) continue
     const current = totals.get(entry.commodity) ?? { purchased: 0, sold: 0, purchaseValue: 0 }
     if (entry.side === 'buy') {
       current.purchased += entry.quantity
@@ -440,6 +484,11 @@ export function getRealizedProfitLoss(state: FinanceState): Map<string, number |
       continue
     }
     if (entry.side !== 'sell') continue
+    if (entry.heldCargo) {
+      // Mined or refined cargo has no purchase cost.
+      profitLossByEntry.set(entry.id, Math.round((entry.total - (entry.crewShareTotal ?? 0)) * 100) / 100)
+      continue
+    }
 
     let remaining = entry.quantity
     let costBasis = 0
@@ -463,7 +512,7 @@ export function getRealizedProfitLoss(state: FinanceState): Map<string, number |
 
 export function getAccountHeldQuantity(state: FinanceState, accountId: string, commodity: string) {
   return state.transactions.reduce((quantity, entry) => {
-    if (entry.accountId !== accountId || entry.commodity !== commodity) return quantity
+    if (entry.accountId !== accountId || entry.commodity !== commodity || entry.heldCargo) return quantity
     if (entry.side === 'buy') return quantity + entry.quantity
     if (entry.side === 'sell') return quantity - entry.quantity
     return quantity

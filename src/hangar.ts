@@ -192,6 +192,21 @@ export function unloadCargo(state: HangarState, shipId: string, commodity: strin
   return { state: { ...state, cargoByShip: { ...state.cargoByShip, [shipId]: currentCargo } } }
 }
 
+// Sets ore quantities read from the in-game hold; values replace rather than add so repeated reads are safe.
+export function setShipOreCargo(state: HangarState, shipId: string, ore: Record<string, number>): { state?: HangarState; error?: string } {
+  const ship = state.ships.find((item) => item.id === shipId)
+  if (!ship) return { error: 'Choose an active ship in Personal hangar first.' }
+  const cargo = { ...(state.cargoByShip[shipId] ?? {}) }
+  for (const [commodity, quantity] of Object.entries(ore)) {
+    const rounded = Math.round(quantity * 100) / 100
+    if (Number.isFinite(rounded) && rounded > 0) cargo[commodity] = rounded
+    else delete cargo[commodity]
+  }
+  const used = Object.values(cargo).reduce((sum, quantity) => sum + quantity, 0)
+  if (ship.cargoCapacity > 0 && used > ship.cargoCapacity + 0.01) return { error: `Read cargo would use ${Math.round(used * 100) / 100} SCU, more than the ${ship.cargoCapacity} SCU hold on ${ship.name}.` }
+  return { state: { ...state, cargoByShip: { ...state.cargoByShip, [shipId]: cargo } } }
+}
+
 export function clearHangarCargo(state: HangarState): HangarState {
   return { ...state, cargoByShip: Object.fromEntries(state.ships.map((ship) => [ship.id, {}])) }
 }

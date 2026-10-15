@@ -1,22 +1,26 @@
-import { useEffect, useEffectEvent, useRef, useState, type ReactNode } from 'react'
+import { Fragment, useEffect, useEffectEvent, useRef, useState, type ReactNode } from 'react'
 import packageMetadata from '../package.json'
 import { Capacitor } from '@capacitor/core'
 import { Directory, Encoding, Filesystem } from '@capacitor/filesystem'
 import { Share } from '@capacitor/share'
 import { previewSyncMerge, persistSyncSnapshot, validateSyncSnapshot, type SyncMergePreview, type SyncProposal, type SyncSnapshot } from './appSync'
-import { disconnectSyncClient, getSyncClientPairing, pairSyncClient, uploadSyncSnapshot, type SyncClientPairing } from './syncClient'
+import { disconnectSyncClient, fetchHostGameStatus, getSyncClientPairing, pairSyncClient, uploadSyncSnapshot, type SyncClientPairing } from './syncClient'
+import { formatLocationCode, isAtLocation } from './playerLocation'
 import { SyncSettings } from './SyncSettings'
 import { ScanScreenReader } from './ScanScreenReader'
 import './App.css'
 import { clearUexCache, getUexData, readNumber, readText, type UexRow } from './uex'
 import { captureMarketPriceSnapshot, getMarketTickerEntries, getMarketTickerHistoryStatus, loadMarketPriceHistory, MARKET_SNAPSHOT_INTERVAL_MS, saveMarketPriceHistory, type MarketPriceSnapshot, type PriceChange } from './marketTicker'
 import { CONTAINER_SIZES, getContainerSelection, isContainerSizedQuantity } from './containerSizes'
-import { createBankAccount, getAccountHeldQuantity, getCommodityHoldings, getRealizedProfitLoss, loadFinanceState, previewCrewPayouts, recordAccountAdjustment, recordGameStoreTransaction, recordTrade, recordVehiclePurchase, saveFinanceState, transferFunds, type AccountTransactionKind, type BankAccount, type FinanceState, type GameStoreTransaction, type LedgerEntry, type NewTrade, type TradeSide } from './finance'
-import { addDetectedShip, addShip, clearHangarCargo, getAssignedQuantity, getShipCargoQuantity, getShipCargoUsed, getUnassignedQuantity, loadCargo, loadHangarState, removeShip, saveHangarState, setActiveShip, unloadCargo, type HangarShip, type HangarState } from './hangar'
+import { createBankAccount, getAccountHeldQuantity, getCommodityHoldings, getRealizedProfitLoss, loadFinanceState, previewCrewPayouts, recordAccountAdjustment, recordGameStoreTransaction, recordHeldCargoSale, recordTrade, recordVehiclePurchase, saveFinanceState, transferFunds, type AccountTransactionKind, type BankAccount, type FinanceState, type GameStoreTransaction, type LedgerEntry, type NewTrade, type TradeSide } from './finance'
+import { addDetectedShip, addShip, clearHangarCargo, getShipCargoQuantity, getShipCargoUsed, getUnassignedQuantity, loadCargo, loadHangarState, removeShip, saveHangarState, setActiveShip, setShipOreCargo, unloadCargo, type HangarShip, type HangarState } from './hangar'
 import { findVehicleForModelCode, importShipsFromJson } from './hangarImport'
 import { addCrewMember, addCrewRole, assignCrewRole, getCrewSharePercent, loadCrewState, removeCrewMember, removeCrewRole, saveCrewState, updateCrewMemberPayoutAccount, updateCrewMemberShare, updateCrewRoleDefault, type CrewMember, type CrewRole, type CrewState } from './crew'
 import { clearRoutePlans, createPlannedRoute, loadRoutePlans, saveRoutePlans, type NewPlannedRoute, type PlannedRoute } from './routePlanner'
 import { addRockScan, loadMiningOpsState, removeRockScan, saveMiningOpsState, type MiningOpsState, type NewRockScan, type RockScan } from './miningOps'
+import { collectRefiningJob, createRefiningOrder, getShipOre, loadRefiningState, removeRefiningJob, saveRefiningState, type NewRefiningOrder, type RefiningJob, type RefiningOre, type RefiningState } from './refining'
+import { RefiningDashboardPanel, RefiningOrders } from './RefiningPanel'
+import { addLocationCargo, buildUnifiedHoldings, listLocationCargo, loadLocationCargo, moveLocationCargoToShip, refineryLocation, removeHeldCargo, saveLocationCargo, type CargoSource, type LocationCargoRow, type LocationCargoState, type UnifiedHolding } from './locationCargo'
 import { loadGameLogState, queueGameLogTransaction, removePendingGameTransaction, saveGameLogState, type GameLogState, type PendingGameTransaction } from './gameLog'
 
 const tokenKey = 'sc-command-hub.uex-token'
@@ -29,6 +33,7 @@ const gameRootsKey = 'sc-command-hub.game-roots-v1'
 type AppTheme = 'field' | 'amber' | 'ice' | 'night' | 'redshift'
 type WorkspaceMode = 'personal' | 'organization'
 type Section = 'dashboard' | 'settings' | 'trade' | 'finance' | 'holdings' | 'hangar' | 'crew' | 'routePlanner' | 'commodities' | 'ships' | 'systems' | 'mining' | 'inventory' | 'fuelPrices'
+type MiningTab = 'market' | 'calculator' | 'refinery' | 'refining' | 'scans'
 type DatasetKey = 'commodities' | 'terminals' | 'vehicles' | 'star_systems' | 'commodities_prices_all' | 'vehicles_purchases_prices_all' | 'fuel_prices_all' | 'refineries_methods' | 'refineries_yields' | 'refineries_capacities'
 type DatasetState = { rows: UexRow[]; status: 'idle' | 'loading' | 'ready' | 'error'; error?: string }
 type TradePreset = { side: TradeSide; commodity: string; terminal: string; unitPrice: number; quantity: number; accountId?: string; shipId?: string; note?: string; routePlanId?: string; routeAction?: 'buy' | 'sell' }
@@ -38,7 +43,8 @@ type GameChannel = 'LIVE' | 'PTU'
 type GameInstallation = { channel: GameChannel; path: string }
 type GameScanStatus = 'checking' | 'ready' | 'unavailable' | 'error'
 type GameLogStatus = 'idle' | 'watching' | 'waiting' | 'waiting-for-log' | 'installation-not-found' | 'invalid-channel' | 'error' | 'unavailable'
-type GameLogEvent = ({ type: 'transaction' } & PendingGameTransaction) | { type: 'ship'; id: string; channel: GameChannel; modelSlug: string; recordedAt: string }
+type GameLogEvent = ({ type: 'transaction' } & PendingGameTransaction) | { type: 'ship'; id: string; channel: GameChannel; modelSlug: string; recordedAt: string } | { type: 'location'; channel: GameChannel; locationCode: string; recordedAt: string }
+type PlayerLocation = { code: string; recordedAt: string; source: 'game-log' | 'primary' }
 type SyncHostStatus = 'stopped' | 'listening' | 'tailscale-cli-not-found' | 'tailscale-dns-unavailable' | 'serve-error' | 'port-in-use' | 'start-error'
 type SyncClientStatus = 'idle' | 'pairing' | 'paired' | 'syncing' | 'uploaded' | 'error'
 type SyncHostInfo = { status: SyncHostStatus; address?: string; publicUrl?: string; port?: number; code?: string; expiresAt?: string; detail?: string }
@@ -345,12 +351,16 @@ function App() {
   const [hangarState, setHangarState] = useState<HangarState>(loadHangarState)
   const [crewState, setCrewState] = useState<CrewState>(loadCrewState)
   const [miningOpsState, setMiningOpsState] = useState<MiningOpsState>(loadMiningOpsState)
+  const [refiningState, setRefiningState] = useState<RefiningState>(loadRefiningState)
+  const [locationCargo, setLocationCargo] = useState<LocationCargoState>(loadLocationCargo)
+  const [miningTab, setMiningTab] = useState<MiningTab>('market')
   const [workspaceMode, setWorkspaceMode] = useState<WorkspaceMode | null>(getStoredWorkspaceMode)
   const [setupOpen, setSetupOpen] = useState(shouldShowFirstRunSetup)
   const [routePlans, setRoutePlans] = useState<PlannedRoute[]>(loadRoutePlans)
   const [financeTab, setFinanceTab] = useState<'ledger' | 'accounts'>('ledger')
   const [selectedVehicleId, setSelectedVehicleId] = useState('')
   const [tradePreset, setTradePreset] = useState<TradePreset | null>(null)
+  const [heldSale, setHeldSale] = useState<{ holding: UnifiedHolding; quote?: UexRow } | null>(null)
   const [vehiclePurchase, setVehiclePurchase] = useState<VehiclePurchaseSelection | null>(null)
   const [gameChannel, setGameChannel] = useState<GameChannel>(getStoredGameChannel)
   const [customGameRoots, setCustomGameRoots] = useState<string[]>(getStoredGameRoots)
@@ -367,6 +377,8 @@ function App() {
   const [syncMergeReview, setSyncMergeReview] = useState<SyncMergeReview | null>(null)
   const [syncClientPairing, setSyncClientPairing] = useState<SyncClientPairing | null>(getSyncClientPairing)
   const [syncClientStatus, setSyncClientStatus] = useState<SyncClientStatus>(() => getSyncClientPairing() ? 'paired' : 'idle')
+  const [playerLocation, setPlayerLocation] = useState<PlayerLocation | null>(null)
+  const [primaryGameLogActive, setPrimaryGameLogActive] = useState(false)
   const [syncLastUploadedAt, setSyncLastUploadedAt] = useState('')
   const [syncError, setSyncError] = useState('')
   const gameLogStateRef = useRef(gameLogState)
@@ -637,6 +649,8 @@ function App() {
   const refineryMethods = datasetsState.refineries_methods.rows
   const refineryYields = datasetsState.refineries_yields.rows
   const refineryCapacities = datasetsState.refineries_capacities.rows
+  const rawMineralNames = commodities.filter((row) => readNumber(row, 'is_mineral') === 1 && readNumber(row, 'is_raw') === 1).map((row) => readText(row, 'name')).filter(Boolean)
+  const refineryNames = [...new Set([...refineryCapacities, ...refineryYields].map((row) => readText(row, 'terminal_name')).filter(Boolean))].sort((left, right) => left.localeCompare(right))
   const systems = datasetsState.star_systems.rows
   const hangarCandidates = vehicles.filter((vehicle) => readNumber(vehicle, 'is_spaceship') === 1 && readNumber(vehicle, 'is_addon') !== 1 && readNumber(vehicle, 'is_concept') !== 1)
   const handleGameLogEvent = useEffectEvent((event: GameLogEvent) => {
@@ -648,6 +662,10 @@ function App() {
       setGameLogState(next)
       const saved = saveGameLogState(next)
       setNotice(`${event.itemName} ${event.kind === 'buy' ? 'purchase' : 'sale'} detected from Game.log. Confirm the account in Money & ledger.${saved ? '' : ' It is only saved for this session.'}`)
+      return
+    }
+    if (event.type === 'location') {
+      setPlayerLocation({ code: event.locationCode, recordedAt: event.recordedAt, source: 'game-log' })
       return
     }
 
@@ -688,9 +706,35 @@ function App() {
       void bridge.stopGameLog?.()
     }
   }, [gameChannel, customGameRoots, gameScanStatus, gameScanRevision])
+
+  // Paired devices without their own Game.log follow the primary's listener for player location.
+  useEffect(() => {
+    if (!syncClientPairing || gameLogStatus === 'watching') {
+      setPrimaryGameLogActive(false)
+      return
+    }
+    let active = true
+    const poll = () => {
+      fetchHostGameStatus(syncClientPairing).then((status) => {
+        if (!active || !status) return
+        setPrimaryGameLogActive(status.gameLogActive)
+        if (status.locationCode && status.recordedAt) setPlayerLocation({ code: status.locationCode, recordedAt: status.recordedAt, source: 'primary' })
+      }).catch(() => {
+        if (active) setPrimaryGameLogActive(false)
+      })
+    }
+    poll()
+    const timer = window.setInterval(poll, 15000)
+    return () => {
+      active = false
+      window.clearInterval(timer)
+    }
+  }, [syncClientPairing, gameLogStatus])
+  const routingMode = gameLogStatus === 'watching' || primaryGameLogActive
   const activeShip = hangarState.ships.find((ship) => ship.id === hangarState.activeShipId)
   const activeShipUsed = activeShip ? getShipCargoUsed(hangarState, activeShip.id) : 0
   const activeShipFree = activeShip ? Math.max(0, activeShip.cargoCapacity - activeShipUsed) : 0
+  const unifiedHoldings = buildUnifiedHoldings(getCommodityHoldings(financeState), hangarState, locationCargo)
   const routeCargo = activeShip ? Math.min(cargo, activeShipFree) : cargo
   const readyCount = datasets.filter(({ key }) => datasetsState[key].status === 'ready').length
   const allReady = readyCount === datasets.length
@@ -917,6 +961,81 @@ function App() {
     saveMiningOpsState(next)
   }
 
+  function syncMinedCargo(ore: Record<string, number>) {
+    if (!hangarState.activeShipId) return 'Select an active ship in Personal hangar first.'
+    const result = setShipOreCargo(hangarState, hangarState.activeShipId, ore)
+    if (!result.state) return result.error || 'Unable to update ship cargo.'
+    setHangarState(result.state)
+    return saveHangarState(result.state) ? '' : 'Cargo updated for this session, but browser storage is unavailable.'
+  }
+
+  function startRefiningOrder(order: NewRefiningOrder) {
+    const result = createRefiningOrder(refiningState, hangarState, order, rawMineralNames)
+    if (!result.state || !result.hangar) return result.error || 'Unable to start this refining order.'
+    setRefiningState(result.state)
+    setHangarState(result.hangar)
+    const saved = saveRefiningState(result.state) && saveHangarState(result.hangar)
+    setNotice(`Refining order started at ${order.refinery}.${saved ? '' : ' Browser storage is unavailable.'}`)
+    return ''
+  }
+
+  function updateRefiningJobs(next: RefiningState) {
+    setRefiningState(next)
+    saveRefiningState(next)
+  }
+
+  function collectRefining(jobId: string, refined: RefiningOre[]) {
+    const job = refiningState.jobs.find((item) => item.id === jobId)
+    if (!job) return 'This refining job no longer exists.'
+    if (!refined.length) return 'Enter at least one refined amount.'
+    const nextJobs = collectRefiningJob(refiningState, jobId, refined)
+    if (!nextJobs.jobs.find((item) => item.id === jobId)?.collectedAt) return 'This job is not ready to collect yet.'
+    const location = refineryLocation(job.refinery)
+    const nextCargo = addLocationCargo(locationCargo, location, refined)
+    setRefiningState(nextJobs)
+    setLocationCargo(nextCargo)
+    const saved = saveRefiningState(nextJobs) && saveLocationCargo(nextCargo)
+    setNotice(`Refined materials collected and stored at ${location}.${saved ? '' : ' Browser storage is unavailable.'}`)
+    return ''
+  }
+
+  function commitHeldSale(sale: { accountId: string; source: CargoSource; quantity: number; unitPrice: number; terminalId: string; terminal: string; commodity: string }) {
+    const recorded = recordHeldCargoSale(financeState, { accountId: sale.accountId, commodity: sale.commodity, terminal: sale.terminal, quantity: sale.quantity, unitPrice: sale.unitPrice }, crewState.members)
+    if (!recorded.state || !recorded.entry) return recorded.error || 'Unable to record this sale.'
+    const removed = removeHeldCargo(locationCargo, hangarState, sale.source, sale.commodity, sale.quantity)
+    if (!removed.stored || !removed.hangar) return removed.error || 'Unable to remove the sold cargo.'
+    const routeIndex = routePlans.findIndex((plan) => plan.commodity === sale.commodity && plan.status === 'purchased' && !plan.buyTerminalId && plan.sellTerminalId === sale.terminalId)
+    const nextRoutes = routeIndex < 0 ? routePlans : routePlans.map((plan, index) => index === routeIndex ? { ...plan, status: 'completed' as const, sellLedgerEntryId: recorded.entry!.id } : plan)
+    financeStateRef.current = recorded.state
+    hangarStateRef.current = removed.hangar
+    setFinanceState(recorded.state)
+    setHangarState(removed.hangar)
+    setLocationCargo(removed.stored)
+    setRoutePlans(nextRoutes)
+    const saved = [saveFinanceState(recorded.state), saveHangarState(removed.hangar), saveLocationCargo(removed.stored), saveRoutePlans(nextRoutes)].every(Boolean)
+    setNotice(`Sold ${recorded.entry.quantity} SCU of ${sale.commodity} for ${formatCredits(recorded.entry.total)}${routeIndex < 0 ? '' : ' and completed its route'}.${saved ? '' : ' Browser storage is unavailable.'}`)
+    return ''
+  }
+
+  function moveStoredCargo(row: LocationCargoRow, quantity: number, shipId: string) {
+    const result = moveLocationCargoToShip(locationCargo, hangarState, row.location, row.commodity, quantity, shipId)
+    if (!result.state || !result.hangar) {
+      setNotice(result.error || 'Unable to move this cargo.')
+      return false
+    }
+    setLocationCargo(result.state)
+    setHangarState(result.hangar)
+    const saved = saveLocationCargo(result.state) && saveHangarState(result.hangar)
+    const shipName = hangarState.ships.find((ship) => ship.id === shipId)?.name ?? 'ship'
+    setNotice(`Moved ${quantity} SCU of ${row.commodity} from ${row.location} to ${shipName}.${saved ? '' : ' Browser storage is unavailable.'}`)
+    return true
+  }
+
+  function openRefining() {
+    setMiningTab('refining')
+    setSection('mining')
+  }
+
   function confirmRouteBuy(plan: PlannedRoute) {
     const quote = prices.find((row) => readText(row, 'commodity_name') === plan.commodity
       && readText(row, 'id_terminal') === plan.buyTerminalId
@@ -981,6 +1100,8 @@ function App() {
       saveCrewState(nextCrew),
       clearRoutePlans(),
       saveGameLogState(nextGameLogState),
+      saveRefiningState({ jobs: [] }),
+      saveLocationCargo({ byLocation: {} }),
     ].every(Boolean)
     financeStateRef.current = nextFinance
     hangarStateRef.current = nextHangar
@@ -990,11 +1111,13 @@ function App() {
     setCrewState(nextCrew)
     setGameLogState(nextGameLogState)
     setRoutePlans([])
+    setRefiningState({ jobs: [] })
+    setLocationCargo({ byLocation: {} })
     setFinanceTab('ledger')
     setSelectedVehicleId('')
     setTradePreset(null)
     setNotice(saved
-      ? 'Factory reset complete. Hangar, crew, accounts, ledger, pending Game.log activity, and route plans were cleared.'
+      ? 'Factory reset complete. Hangar, crew, accounts, ledger, pending Game.log activity, route plans, and refining jobs were cleared.'
       : 'Factory reset applied for this session, but browser storage could not be updated.')
     return saved
   }
@@ -1056,6 +1179,20 @@ function App() {
     const next = routePlans.filter((route) => route.id !== routeId)
     setRoutePlans(next)
     setNotice(saveRoutePlans(next) ? 'Route plan removed.' : 'Route plan removed for this session, but browser storage is unavailable.')
+  }
+
+  function addHeldCargoRoute(holding: UnifiedHolding, sellQuote: UexRow) {
+    const shipId = holding.ships.find((ship) => ship.shipId === hangarState.activeShipId)?.shipId ?? holding.ships[0]?.shipId ?? null
+    const quantity = holding.total
+    const plan: PlannedRoute = {
+      ...createPlannedRoute({ commodity: holding.commodity, buyTerminalId: '', buyTerminalName: 'Held cargo', sellTerminalId: readText(sellQuote, 'id_terminal'), sellTerminalName: readText(sellQuote, 'terminal_name'), quantity }),
+      status: 'purchased',
+      purchasedQuantity: quantity,
+      buyShipId: shipId,
+    }
+    const next = [...routePlans, plan]
+    setRoutePlans(next)
+    setNotice(`${holding.commodity} added to your route: sell at ${plan.sellTerminalName}.${saveRoutePlans(next) ? '' : ' Browser storage is unavailable.'}`)
   }
 
   function createCrewMember(name: string, roleId: string | null, sharePercent: number, payoutAccountId: string | null) {
@@ -1221,7 +1358,7 @@ function App() {
           <NavButton active={section === 'finance'} onClick={() => setSection('finance')} icon="$" label="Money & ledger" count={financeState.transactions.length || undefined} />
           <NavButton active={section === 'hangar'} onClick={() => setSection('hangar')} icon="▰" label="Personal hangar" count={hangarState.ships.length || undefined} />
           <NavButton active={section === 'crew'} onClick={() => setSection('crew')} icon="♙" label="Crew manager" count={crewState.members.length || undefined} />
-          <NavButton active={section === 'holdings'} onClick={() => setSection('holdings')} icon="▤" label="Cargo holdings" count={getCommodityHoldings(financeState).length || undefined} />
+          <NavButton active={section === 'holdings'} onClick={() => setSection('holdings')} icon="▤" label="Cargo holdings" count={unifiedHoldings.length || undefined} />
           <div className="nav-caption nav-caption-spaced">INTEL</div>
           <NavButton active={section === 'commodities'} onClick={() => setSection('commodities')} icon="◈" label="Commodities" count={commodityNames.length || undefined} />
           <NavButton active={section === 'systems'} onClick={() => setSection('systems')} icon="◎" label="Star systems" count={systems.length || undefined} />
@@ -1273,7 +1410,7 @@ function App() {
             {section !== 'trade' && section !== 'inventory' && section !== 'settings' && <div className="search-field"><span aria-hidden="true">⌕</span><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder={`Search ${sectionTitle(section).toLowerCase()}`} aria-label={`Search ${sectionTitle(section).toLowerCase()}`} /><kbd>/</kbd></div>}
           </div>}
 
-          {section === 'dashboard' && <DashboardView financeState={financeState} hangarState={hangarState} activeShip={activeShip} crewState={crewState} routePlans={routePlans} prices={prices} priceState={datasetsState.commodities_prices_all} marketHistory={marketHistory} onNavigate={setSection} />}
+          {section === 'dashboard' && <DashboardView financeState={financeState} hangarState={hangarState} activeShip={activeShip} crewState={crewState} routePlans={routePlans} prices={prices} priceState={datasetsState.commodities_prices_all} marketHistory={marketHistory} refiningJobs={refiningState.jobs} onOpenRefining={openRefining} onNavigate={setSection} />}
           {section === 'settings' && <ThemeSettingsView
             theme={theme}
             onChange={updateTheme}
@@ -1339,7 +1476,7 @@ function App() {
             onConfirmGameTransaction={confirmGameLogTransaction}
             onDismissGameTransaction={dismissGameLogTransaction}
           />}
-          {section === 'holdings' && <HoldingsView holdings={getCommodityHoldings(financeState)} prices={prices} state={datasetsState.commodities_prices_all} search={search} activeShip={activeShip} hangarState={hangarState} financeState={financeState} activeShipFree={activeShipFree} onAllocate={changeCargoAllocation} onSell={(commodity, quantity) => openTradeRecord('sell', undefined, commodity, quantity)} />}
+          {section === 'holdings' && <HoldingsView holdings={unifiedHoldings} prices={prices} state={datasetsState.commodities_prices_all} search={search} activeShip={activeShip} hangarState={hangarState} activeShipFree={activeShipFree} onAllocate={changeCargoAllocation} storedCargo={listLocationCargo(locationCargo)} onMoveStored={moveStoredCargo} onSell={(commodity, quantity, quote) => openTradeRecord('sell', quote, commodity, quantity)} onSellHeld={(holding, quote) => setHeldSale({ holding, quote })} routingMode={routingMode} playerLocation={playerLocation} routePlans={routePlans} terminals={terminals} onAddToRoute={addHeldCargoRoute} onOpenRoutes={() => setSection('routePlanner')} />}
           {section === 'hangar' && <HangarView hangarState={hangarState} candidates={hangarCandidates} vehicles={vehicles} purchaseRows={datasetsState.vehicles_purchases_prices_all.rows} terminals={terminals} selectedVehicleId={selectedVehicleId} setSelectedVehicleId={setSelectedVehicleId} onAdd={addHangarShip} onImport={importHangarShips} onSetActive={updateActiveShip} onSetPermanent={updateShipPermanent} onRemove={removeHangarShip} />}
           {section === 'crew' && <CrewManagerView crewState={crewState} transactions={financeState.transactions} accounts={financeState.accounts} search={search} onAdd={createCrewMember} onAssignRole={assignMemberRole} onUpdateShare={updateCrewShare} onUpdatePayoutAccount={updateCrewPayoutAccount} onRemove={deleteCrewMember} onAddRole={createCrewRole} onUpdateRoleDefault={changeCrewRoleDefault} onRemoveRole={deleteCrewRole} />}
           {section === 'commodities' && <CommodityView rows={commodities.length ? commodities : prices} state={datasetsState.commodities.status === 'ready' ? datasetsState.commodities : datasetsState.commodities_prices_all} search={search} />}
@@ -1354,12 +1491,22 @@ function App() {
             onBuy={(vehicle, offers) => setVehiclePurchase({ vehicle, offers })}
           />}
           {section === 'systems' && <SystemsView rows={systems} terminals={terminals} prices={prices} newLocationKeys={newLocationKeys} state={datasetsState.star_systems} terminalState={datasetsState.terminals} priceState={datasetsState.commodities_prices_all} search={search} />}
-          {section === 'mining' && <MiningView prices={prices} commodities={commodities} state={datasetsState.commodities_prices_all} methods={refineryMethods} methodsState={datasetsState.refineries_methods} yields={refineryYields} yieldsState={datasetsState.refineries_yields} capacities={refineryCapacities} capacitiesState={datasetsState.refineries_capacities} search={search} miningOpsState={miningOpsState} onAddScan={addMiningScan} onRemoveScan={removeMiningScan} />}
+          {section === 'mining' && <MiningView prices={prices} commodities={commodities} state={datasetsState.commodities_prices_all} methods={refineryMethods} methodsState={datasetsState.refineries_methods} yields={refineryYields} yieldsState={datasetsState.refineries_yields} capacities={refineryCapacities} capacitiesState={datasetsState.refineries_capacities} search={search} miningOpsState={miningOpsState} onAddScan={addMiningScan} onRemoveScan={removeMiningScan} activeShipName={activeShip?.name} onSyncCargo={syncMinedCargo} tab={miningTab} onTabChange={setMiningTab} refineryNames={refineryNames} shipOre={getShipOre(hangarState, hangarState.activeShipId, rawMineralNames)} refiningJobs={refiningState.jobs} onStartRefining={startRefiningOrder} onCollectRefining={collectRefining} onRemoveRefining={(jobId) => updateRefiningJobs(removeRefiningJob(refiningState, jobId))} />}
           {section === 'fuelPrices' && <FuelPricesView rows={filteredRows(fuelPrices, ['commodity_name', 'terminal_name', 'star_system_name', 'planet_name', 'city_name'])} terminals={terminals} state={datasetsState.fuel_prices_all} />}
           {section === 'inventory' && <ItemCatalogView key={token} token={token} />}
 
           <footer className="data-footer"><span>UEX data is community-maintained and may be incomplete or outdated.</span><span><span className="footer-dot" /> {allReady ? `${prices.length.toLocaleString()} PRICE RECORDS` : 'AWAITING DATA'}</span></footer>
         </main>
+        {heldSale && <HeldCargoSaleDialog
+          holding={heldSale.holding}
+          initialQuote={heldSale.quote}
+          quotes={prices.filter((row) => readText(row, 'commodity_name') === heldSale.holding.commodity && readNumber(row, 'price_sell') > 0).sort((left, right) => readNumber(right, 'price_sell') - readNumber(left, 'price_sell'))}
+          accounts={financeState.accounts}
+          activeShipId={hangarState.activeShipId}
+          onClose={() => setHeldSale(null)}
+          onSubmit={commitHeldSale}
+          onAddAccount={() => { setHeldSale(null); setFinanceTab('accounts'); setSection('finance') }}
+        />}
         {tradePreset && <RecordTradeDialog
           key={`${tradePreset.side}-${tradePreset.commodity}-${tradePreset.terminal}-${tradePreset.unitPrice}-${tradePreset.routePlanId ?? 'manual'}-${tradePreset.routeAction ?? ''}`}
           preset={tradePreset}
@@ -1519,7 +1666,7 @@ function DashboardTicker({ prices, priceState, history }: { prices: UexRow[]; pr
   </section>
 }
 
-function DashboardView({ financeState, hangarState, activeShip, crewState, routePlans, prices, priceState, marketHistory, onNavigate }: {
+function DashboardView({ financeState, hangarState, activeShip, crewState, routePlans, prices, priceState, marketHistory, refiningJobs, onOpenRefining, onNavigate }: {
   financeState: FinanceState
   hangarState: HangarState
   activeShip?: HangarShip
@@ -1528,6 +1675,8 @@ function DashboardView({ financeState, hangarState, activeShip, crewState, route
   prices: UexRow[]
   priceState: DatasetState
   marketHistory: MarketPriceSnapshot[]
+  refiningJobs: RefiningJob[]
+  onOpenRefining: () => void
   onNavigate: (section: Section) => void
 }) {
   const holdings = getCommodityHoldings(financeState)
@@ -1584,6 +1733,7 @@ function DashboardView({ financeState, hangarState, activeShip, crewState, route
         </div>
       </section>
     </div>
+    <RefiningDashboardPanel jobs={refiningJobs} onOpen={onOpenRefining} />
   </>
 }
 
@@ -1669,7 +1819,7 @@ function ThemeSettingsView({ theme, onChange, onFactoryReset, gameChannel, gameI
     {syncSettings}
     <section className="data-section settings-reset-section">
       <div className="section-toolbar"><div><h2>Factory reset</h2><span>Permanently clear personal operating data from this browser.</span></div><span className="table-label">DESTRUCTIVE ACTION</span></div>
-      <div className="settings-reset-row"><div><strong>Reset local data</strong><span>Deletes ships and cargo, crew and roles, bank accounts, ledger history, pending Game.log activity, and saved route plans. Your UEX token and theme are kept.</span></div><button className="danger-button" type="button" onClick={() => setResetOpen(true)}>Factory reset</button></div>
+      <div className="settings-reset-row"><div><strong>Reset local data</strong><span>Deletes ships and cargo, crew and roles, bank accounts, ledger history, pending Game.log activity, saved route plans, and refining jobs. Your UEX token and theme are kept.</span></div><button className="danger-button" type="button" onClick={() => setResetOpen(true)}>Factory reset</button></div>
     </section>
     {import.meta.env.DEV && <section className="data-section settings-reset-section">
       <div className="section-toolbar"><div><h2>Development server</h2><span>Stopping it disconnects this app until the server is restarted.</span></div><button className="danger-button" type="button" onClick={() => setShutdownOpen(true)}>Shutdown server</button></div>
@@ -1694,7 +1844,7 @@ function FactoryResetDialog({ onClose, onConfirm }: { onClose: () => void; onCon
   return <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose() }}>
     <section className="record-modal clear-ledger-modal factory-reset-modal" role="alertdialog" aria-modal="true" aria-labelledby="factory-reset-title">
       <div className="record-modal-head"><div><span className="eyebrow">PERMANENT ACTION</span><h2 id="factory-reset-title">Reset all personal data?</h2></div><button className="close-button" type="button" onClick={onClose} aria-label="Close confirmation">×</button></div>
-      <div className="clear-ledger-content factory-reset-copy"><p>This deletes all ships, cargo allocations, crew members and roles, bank accounts, ledger entries, pending Game.log activity, and saved route plans. This cannot be undone.</p><p>Your UEX API token, theme, and UEX data are not affected.</p></div>
+      <div className="clear-ledger-content factory-reset-copy"><p>This deletes all ships, cargo allocations, crew members and roles, bank accounts, ledger entries, pending Game.log activity, saved route plans, and refining jobs. This cannot be undone.</p><p>Your UEX API token, theme, and UEX data are not affected.</p></div>
       <label className="factory-reset-confirmation"><span>Type RESET to confirm</span><input value={confirmation} onChange={(event) => setConfirmation(event.target.value)} autoComplete="off" /></label>
       <div className="record-actions"><button className="secondary-button" type="button" onClick={onClose}>Cancel</button><button className="danger-button confirm-clear-button" type="button" disabled={confirmation !== 'RESET'} onClick={onConfirm}>Reset everything</button></div>
     </section>
@@ -1829,17 +1979,18 @@ function RoutePlannerView({ plans, prices, priceState, terminals, search, onAdd,
           const planOffers = quoteCache.get(plan.commodity) ?? []
           const currentBuy = planOffers.find((offer) => offer.terminalId === plan.buyTerminalId)
           const currentSell = planOffers.find((offer) => offer.terminalId === plan.sellTerminalId)
-          const capacity = currentBuy && currentSell ? Math.min(currentBuy.buyQuantity, currentSell.sellStock) : 0
-          const hasQuotes = Boolean(currentBuy && currentSell && priceState.status === 'ready')
+          const heldCargo = !plan.buyTerminalId
+          const capacity = heldCargo ? currentSell?.sellStock ?? 0 : currentBuy && currentSell ? Math.min(currentBuy.buyQuantity, currentSell.sellStock) : 0
+          const hasQuotes = Boolean((heldCargo || currentBuy) && currentSell && priceState.status === 'ready')
           const estimateQuantity = plan.purchasedQuantity ?? plan.quantity
-          const profit = hasQuotes && currentBuy && currentSell ? (currentSell.sellPrice - currentBuy.buyPrice) * estimateQuantity : 0
+          const profit = hasQuotes && currentSell ? (currentSell.sellPrice - (heldCargo ? 0 : currentBuy?.buyPrice ?? 0)) * estimateQuantity : 0
           const exceedsVolume = hasQuotes && plan.quantity > capacity
           const marketStatus = priceState.status === 'loading' || priceState.status === 'idle' ? 'Quotes updating' : priceState.status === 'error' || !hasQuotes ? 'Quote unavailable' : exceedsVolume ? `Above ${formatQuantity(capacity)} SCU` : profit > 0 ? 'Fits current quotes' : 'No positive margin'
-          const status = plan.status === 'completed' ? 'Route completed' : plan.status === 'purchased' ? `Bought ${formatQuantity(plan.purchasedQuantity ?? plan.quantity)} SCU` : marketStatus
+          const status = plan.status === 'completed' ? 'Route completed' : heldCargo ? `Deliver ${formatQuantity(estimateQuantity)} SCU` : plan.status === 'purchased' ? `Bought ${formatQuantity(plan.purchasedQuantity ?? plan.quantity)} SCU` : marketStatus
           const statusClass = plan.status !== 'planned' ? 'ready' : !hasQuotes ? 'unavailable' : exceedsVolume || profit <= 0 ? 'warning' : 'ready'
           return <tr key={plan.id}>
             <td><strong>{plan.commodity}</strong><small>{formatQuantity(plan.quantity)} SCU planned{plan.purchasedQuantity ? ` · ${formatQuantity(plan.purchasedQuantity)} SCU bought` : ''}</small></td>
-            <td><strong>{plan.buyTerminalName}</strong><small>{currentBuy ? `${currentBuy.location ? `${currentBuy.location} · ` : ''}${formatCredits(currentBuy.buyPrice)} · ${formatQuantity(currentBuy.buyQuantity)} SCU available` : 'Current quote unavailable'}</small></td>
+            <td><strong>{plan.buyTerminalName}</strong><small>{heldCargo ? 'Already in your holdings' : currentBuy ? `${currentBuy.location ? `${currentBuy.location} · ` : ''}${formatCredits(currentBuy.buyPrice)} · ${formatQuantity(currentBuy.buyQuantity)} SCU available` : 'Current quote unavailable'}</small></td>
             <td><strong>{plan.sellTerminalName}</strong><small>{currentSell ? `${currentSell.location ? `${currentSell.location} · ` : ''}${formatCredits(currentSell.sellPrice)} · ${formatQuantity(currentSell.sellStock)} SCU stock` : 'Current quote unavailable'}</small></td>
             <td className={profit > 0 ? 'route-plan-profit' : profit < 0 ? 'ledger-debit' : ''}>{hasQuotes ? `${profit < 0 ? '−' : '+'}${formatCredits(Math.abs(profit))}` : '—'}</td>
             <td><span className={`route-plan-status ${statusClass}`}>{status}</span></td>
@@ -2360,41 +2511,144 @@ function CargoAllocationControl({ unassigned, loaded, freeCapacity, onLoad, onUn
   </div>
 }
 
-function HoldingsView({ holdings, prices, state, search, activeShip, hangarState, financeState, activeShipFree, onAllocate, onSell }: {
-  holdings: ReturnType<typeof getCommodityHoldings>
+function HoldingsView({ holdings, prices, state, search, activeShip, hangarState, activeShipFree, onAllocate, storedCargo, onMoveStored, onSell, onSellHeld, routingMode, playerLocation, routePlans, terminals, onAddToRoute, onOpenRoutes }: {
+  holdings: UnifiedHolding[]
   prices: UexRow[]
   state: DatasetState
   search: string
   activeShip?: HangarShip
   hangarState: HangarState
-  financeState: FinanceState
   activeShipFree: number
   onAllocate: (action: 'load' | 'unload', shipId: string, commodity: string, quantity: number) => void
-  onSell: (commodity: string, quantity: number) => void
+  storedCargo: LocationCargoRow[]
+  onMoveStored: (row: LocationCargoRow, quantity: number, shipId: string) => boolean
+  onSell: (commodity: string, quantity: number, quote?: UexRow) => void
+  onSellHeld: (holding: UnifiedHolding, quote?: UexRow) => void
+  routingMode: boolean
+  playerLocation: PlayerLocation | null
+  routePlans: PlannedRoute[]
+  terminals: UexRow[]
+  onAddToRoute: (holding: UnifiedHolding, quote: UexRow) => void
+  onOpenRoutes: () => void
 }) {
-  const filtered = holdings.filter((holding) => !search || holding.commodity.toLowerCase().includes(search.toLowerCase()))
-  const totalQuantity = filtered.reduce((sum, holding) => sum + holding.quantity, 0)
-  const fleetQuantity = holdings.reduce((sum, holding) => sum + getAssignedQuantity(hangarState, holding.commodity), 0)
+  const terminalById = new Map(terminals.map((terminal) => [readText(terminal, 'id'), terminal]))
+  const placeNames = (quote: UexRow) => {
+    const terminal = terminalById.get(readText(quote, 'id_terminal')) ?? {}
+    return [readText(quote, 'terminal_name'), ...['name', 'space_station_name', 'city_name', 'outpost_name', 'poi_name'].map((field) => readText(terminal, field))]
+  }
+  const query = search.trim().toLocaleLowerCase()
+  const filtered = holdings.filter((holding) => !query || `${holding.commodity} ${holding.ships.map((ship) => ship.shipName).join(' ')} ${holding.stored.map((row) => row.location).join(' ')}`.toLocaleLowerCase().includes(query))
+  const totalQuantity = filtered.reduce((sum, holding) => sum + holding.total, 0)
+  const fleetQuantity = holdings.reduce((sum, holding) => sum + holding.ships.reduce((shipSum, ship) => shipSum + ship.scu, 0), 0)
+  const storedQuantity = storedCargo.reduce((sum, row) => sum + row.scu, 0)
   return <>
-    <div className="holdings-summary"><div><span>UNSOLD COMMODITIES</span><strong>{filtered.length}</strong><small>Based on recorded buys minus sales</small></div><div><span>OWNED CARGO</span><strong>{formatQuantity(totalQuantity)} SCU</strong><small>Across all recorded commodities</small></div><div><span>ACTIVE SHIP HOLD</span><strong>{activeShip ? `${formatQuantity(getShipCargoUsed(hangarState, activeShip.id))} / ${formatQuantity(activeShip.cargoCapacity)} SCU` : 'No active ship'}</strong><small>{activeShip ? activeShip.name : 'Choose one in Personal hangar'}</small></div><div><span>ASSIGNED TO FLEET</span><strong>{formatQuantity(fleetQuantity)} SCU</strong><small>Across all ships in your hangar</small></div></div>
+    <div className="holdings-summary"><div><span>COMMODITIES HELD</span><strong>{filtered.length}</strong><small>Purchased, mined, and refined cargo</small></div><div><span>TOTAL CARGO</span><strong>{formatQuantity(totalQuantity)} SCU</strong><small>Unassigned, on ships, and stored</small></div><div><span>ACTIVE SHIP HOLD</span><strong>{activeShip ? `${formatQuantity(getShipCargoUsed(hangarState, activeShip.id))} / ${formatQuantity(activeShip.cargoCapacity)} SCU` : 'No active ship'}</strong><small>{activeShip ? activeShip.name : 'Choose one in Personal hangar'}</small></div><div><span>ON SHIPS · AT STATIONS</span><strong>{formatQuantity(fleetQuantity)} · {formatQuantity(storedQuantity)} SCU</strong><small>Across your hangar and refinery storage</small></div></div>
     <section className="data-section holdings-section">
-      <div className="section-toolbar"><div><h2>Cargo holdings</h2><span>{filtered.length} commodities with unclosed quantities</span></div><span className="table-label">LOCAL INVENTORY</span></div>
+      <div className="section-toolbar"><div><h2>Cargo holdings</h2><span>{filtered.length} commodities · every location they are held</span></div><span className="table-label">LOCAL INVENTORY</span></div>
       {state.status === 'error' && <div className="holdings-market-warning">UEX sell quotes are unavailable. Your recorded cargo is still shown.</div>}
       {!activeShip && <div className="holdings-market-warning">Select an active ship in Personal hangar to load cargo and sell from its hold. Unassigned holdings remain available.</div>}
-      <div className="table-scroll"><table className="data-table holdings-table"><thead><tr><th>COMMODITY</th><th>OWNED</th><th>ON ACTIVE SHIP</th><th>UNASSIGNED</th><th>AVG. BUY PRICE</th><th>BEST SELL QUOTE</th><th>SELL AT</th><th>CARGO</th><th></th></tr></thead><tbody>
+      {routingMode && <div className="holdings-routing-status"><span className={`status-dot ${playerLocation ? 'is-live' : 'is-loading'}`} /><span>{playerLocation ? `Player at ${formatLocationCode(playerLocation.code)} · ${playerLocation.source === 'primary' ? 'from primary Game.log' : 'from Game.log'} · ${formatDate(playerLocation.recordedAt)}` : 'Game.log routing active · waiting for your location (open a station inventory or terminal in game)'}</span><small>Sell unlocks when you are at a location that buys the cargo.</small></div>}
+      <div className="table-scroll"><table className="data-table holdings-table"><thead><tr><th>COMMODITY</th><th>TOTAL</th><th>ON ACTIVE SHIP</th><th>UNASSIGNED</th><th>AVG. BUY PRICE</th><th>BEST SELL QUOTE</th><th>SELL AT</th><th>CARGO</th><th></th></tr></thead><tbody>
         {filtered.map((holding) => {
           const quotes = prices.filter((row) => readText(row, 'commodity_name') === holding.commodity && readNumber(row, 'price_sell') > 0 && readNumber(row, 'scu_sell_stock') > 0).sort((left, right) => readNumber(right, 'price_sell') - readNumber(left, 'price_sell'))
           const best = quotes[0]
           const loaded = activeShip ? getShipCargoQuantity(hangarState, activeShip.id, holding.commodity) : 0
-          const unassigned = getUnassignedQuantity(financeState, hangarState, holding.commodity)
-          return <tr key={holding.commodity}><td className="primary-cell">{holding.commodity}</td><td className="holding-quantity">{formatQuantity(holding.quantity)} SCU</td><td>{formatQuantity(loaded)} SCU</td><td>{formatQuantity(unassigned)} SCU</td><td>{formatCredits(holding.averagePurchasePrice)}</td><td>{best ? formatCredits(readNumber(best, 'price_sell')) : '—'}</td><td>{best ? readText(best, 'terminal_name') : state.status === 'loading' ? 'Loading quote…' : 'No active quote'}</td><td>{activeShip ? <CargoAllocationControl key={`${holding.commodity}-${loaded}-${unassigned}-${activeShipFree}`} unassigned={unassigned} loaded={loaded} freeCapacity={activeShipFree} onLoad={(quantity) => onAllocate('load', activeShip.id, holding.commodity, quantity)} onUnload={(quantity) => onAllocate('unload', activeShip.id, holding.commodity, quantity)} /> : '—'}</td><td><button className="holdings-sell-button" type="button" disabled={!best || (!loaded && !unassigned)} onClick={() => onSell(holding.commodity, loaded || unassigned)}>Sell</button></td></tr>
+          const ledgerLoaded = Math.min(loaded, holding.ledgerQuantity)
+          const sellable = Math.min(holding.ledgerQuantity, ledgerLoaded || holding.unassigned)
+          const openRoute = routePlans.find((plan) => plan.commodity === holding.commodity && plan.status === 'purchased')
+          const localQuote = routingMode && playerLocation ? quotes.find((quote) => isAtLocation(playerLocation.code, placeNames(quote))) : undefined
+          const shownQuote = localQuote ?? (openRoute ? quotes.find((quote) => readText(quote, 'id_terminal') === openRoute.sellTerminalId) : undefined) ?? best
+          const heldQuantity = holding.ships.reduce((sum, ship) => sum + ship.scu, 0) + holding.stored.reduce((sum, row) => sum + row.scu, 0) - Math.min(holding.ledgerQuantity, holding.ships.reduce((sum, ship) => sum + ship.scu, 0))
+          const canSell = sellable > 0 || heldQuantity > 0.001
+          const sell = (quote?: UexRow) => sellable > 0 ? onSell(holding.commodity, sellable, quote) : onSellHeld(holding, quote ?? best)
+          const action = !routingMode
+            ? <button className="holdings-sell-button" type="button" disabled={!canSell} onClick={() => sell()}>Sell</button>
+            : localQuote
+              ? <button className="holdings-sell-button is-here" type="button" disabled={!canSell} title={`You are at ${readText(localQuote, 'terminal_name')}`} onClick={() => sell(localQuote)}>Sell</button>
+              : openRoute
+                ? <button className="holdings-route-button on-route" type="button" title={`Sell at ${openRoute.sellTerminalName}`} onClick={onOpenRoutes}>On route ↗</button>
+                : <button className="holdings-route-button" type="button" disabled={!best} title={best ? `Add a sell stop at ${readText(best, 'terminal_name')}` : 'No current sell quote'} onClick={() => best && onAddToRoute(holding, best)}>Add to route</button>
+          return <Fragment key={holding.commodity}>
+            <tr className="holding-main-row"><td className="primary-cell">{holding.commodity}{!holding.ledgerQuantity && <small className="holding-source">MINED / REFINED</small>}</td><td className="holding-quantity">{formatQuantity(holding.total)} SCU</td><td>{formatQuantity(loaded)} SCU</td><td>{formatQuantity(holding.unassigned)} SCU</td><td>{holding.ledgerQuantity ? formatCredits(holding.averagePurchasePrice) : '—'}</td><td>{shownQuote ? formatCredits(readNumber(shownQuote, 'price_sell')) : '—'}</td><td>{shownQuote ? readText(shownQuote, 'terminal_name') : state.status === 'loading' ? 'Loading quote…' : 'No active quote'}</td><td>{activeShip && holding.ledgerQuantity > 0 ? <CargoAllocationControl key={`${holding.commodity}-${ledgerLoaded}-${holding.unassigned}-${activeShipFree}`} unassigned={holding.unassigned} loaded={ledgerLoaded} freeCapacity={activeShipFree} onLoad={(quantity) => onAllocate('load', activeShip.id, holding.commodity, quantity)} onUnload={(quantity) => onAllocate('unload', activeShip.id, holding.commodity, quantity)} /> : '—'}</td><td>{action}</td></tr>
+            <tr className="holding-locations-row"><td colSpan={9}><div className="holding-locations">
+              <span className="holding-locations-label">HELD AT</span>
+              {holding.unassigned > 0 && <span className="holding-location-chip">Unassigned · {formatQuantity(holding.unassigned)} SCU</span>}
+              {holding.ships.map((ship) => <span className={`holding-location-chip ship ${ship.shipId === activeShip?.id ? 'active' : ''}`} key={ship.shipId}>{ship.shipName}{ship.shipId === activeShip?.id ? ' (active)' : ''} · {formatQuantity(ship.scu)} SCU</span>)}
+              {holding.stored.map((row) => <span className="holding-location-chip stored" key={row.location}>{row.location} · {formatQuantity(row.scu)} SCU<StoredCargoMove key={`${row.location}-${row.scu}`} row={{ location: row.location, commodity: holding.commodity, scu: row.scu }} ships={hangarState.ships} defaultShipId={activeShip?.id ?? ''} onMove={onMoveStored} /></span>)}
+            </div></td></tr>
+          </Fragment>
         })}
-        {!filtered.length && <tr><td colSpan={9} className="empty-cell">{holdings.length ? 'No holdings match this search.' : 'No recorded commodity holdings. Record a buy to add cargo here.'}</td></tr>}
+        {!filtered.length && <tr><td colSpan={9} className="empty-cell">{holdings.length ? 'No holdings match this search.' : 'No cargo yet. Record a buy, read your mining cargo, or collect a refining job.'}</td></tr>}
       </tbody></table></div>
-      <div className="table-note"><span>Loading moves owned cargo into the active ship without changing ownership.</span><span>Unloading returns it to unassigned holdings.</span></div>
+      <div className="table-note"><span>Stored cargo stays at its station until you move it to a ship.</span><span>Load and unload apply to purchased cargo; moves respect hold capacity.</span></div>
     </section>
     <div className="disclaimer-strip"><span className="disclaimer-icon">i</span><span>Sale records reduce ownership and the selected ship’s hold. UEX does not execute the trade.</span></div>
   </>
+}
+
+function StoredCargoMove({ row, ships, defaultShipId, onMove }: { row: LocationCargoRow; ships: HangarShip[]; defaultShipId: string; onMove: (row: LocationCargoRow, quantity: number, shipId: string) => boolean }) {
+  const [shipId, setShipId] = useState(defaultShipId)
+  const [quantity, setQuantity] = useState(String(row.scu))
+  if (!ships.length) return <span className="cargo-move-hint">Add a ship to your hangar</span>
+  return <form className="cargo-move-control" onSubmit={(event) => { event.preventDefault(); onMove(row, Number(quantity), shipId) }}>
+    <select aria-label={`Ship for ${row.commodity}`} value={shipId} onChange={(event) => setShipId(event.target.value)} required><option value="">Choose ship</option>{ships.map((ship) => <option key={ship.id} value={ship.id}>{ship.name}</option>)}</select>
+    <input aria-label={`Amount of ${row.commodity} to move`} type="number" min="0.01" max={row.scu} step="0.01" value={quantity} onChange={(event) => setQuantity(event.target.value)} required />
+    <button className="secondary-button" type="submit" disabled={!shipId}>Move</button>
+  </form>
+}
+
+function HeldCargoSaleDialog({ holding, initialQuote, quotes, accounts, activeShipId, onClose, onSubmit, onAddAccount }: {
+  holding: UnifiedHolding
+  initialQuote?: UexRow
+  quotes: UexRow[]
+  accounts: BankAccount[]
+  activeShipId: string | null
+  onClose: () => void
+  onSubmit: (sale: { accountId: string; source: CargoSource; quantity: number; unitPrice: number; terminalId: string; terminal: string; commodity: string }) => string
+  onAddAccount: () => void
+}) {
+  const sources = [
+    ...holding.ships.map((ship) => ({ key: `ship:${ship.shipId}`, label: `${ship.shipName} (ship)`, scu: ship.scu, source: { kind: 'ship', shipId: ship.shipId } as CargoSource })),
+    ...holding.stored.map((row) => ({ key: `stored:${row.location}`, label: `${row.location} (stored)`, scu: row.scu, source: { kind: 'stored', location: row.location } as CargoSource })),
+  ]
+  const [sourceKey, setSourceKey] = useState(() => (sources.find((item) => item.key === `ship:${activeShipId}`) ?? sources[0])?.key ?? '')
+  const [terminalId, setTerminalId] = useState(() => readText(initialQuote ?? quotes[0] ?? {}, 'id_terminal'))
+  const source = sources.find((item) => item.key === sourceKey)
+  const quote = quotes.find((row) => readText(row, 'id_terminal') === terminalId)
+  const [quantity, setQuantity] = useState(() => String(source?.scu ?? ''))
+  const [unitPrice, setUnitPrice] = useState(() => String(readNumber(quote ?? {}, 'price_sell') || ''))
+  const [accountId, setAccountId] = useState(accounts[0]?.id ?? '')
+  const [error, setError] = useState('')
+  const total = (Number(quantity) || 0) * (Number(unitPrice) || 0)
+
+  function submit(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    if (!source || !quote) {
+      setError('Choose where the cargo is and where you sold it.')
+      return
+    }
+    const message = onSubmit({ accountId, source: source.source, quantity: Number(quantity), unitPrice: Number(unitPrice), terminalId, terminal: readText(quote, 'terminal_name'), commodity: holding.commodity })
+    if (message) setError(message)
+    else onClose()
+  }
+
+  return <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose() }}>
+    <section className="record-modal transfer-modal" role="dialog" aria-modal="true" aria-labelledby="held-sale-title">
+      <div className="record-modal-head"><div><span className="eyebrow">MINED / REFINED CARGO</span><h2 id="held-sale-title">Sell {holding.commodity}</h2></div><button className="close-button" type="button" onClick={onClose} aria-label="Close sale form">×</button></div>
+      {!accounts.length ? <div className="no-account-prompt"><p>Add a bank account to receive the sale payment.</p><button className="primary-button" type="button" onClick={onAddAccount}>Add bank account</button></div> : <form onSubmit={submit}>
+        <div className="record-fields account-transaction-fields">
+          <label className="record-field"><span>SELL FROM</span><select value={sourceKey} onChange={(event) => { setSourceKey(event.target.value); setQuantity(String(sources.find((item) => item.key === event.target.value)?.scu ?? '')) }} required>{sources.map((item) => <option key={item.key} value={item.key}>{item.label} · {formatQuantity(item.scu)} SCU</option>)}</select></label>
+          <label className="record-field"><span>SOLD AT</span><select value={terminalId} onChange={(event) => { setTerminalId(event.target.value); setUnitPrice(String(readNumber(quotes.find((row) => readText(row, 'id_terminal') === event.target.value) ?? {}, 'price_sell') || '')) }} required><option value="">Choose terminal</option>{quotes.map((row) => <option key={readText(row, 'id_terminal')} value={readText(row, 'id_terminal')}>{readText(row, 'terminal_name')} · {formatCredits(readNumber(row, 'price_sell'))}</option>)}</select></label>
+          <label className="record-field"><span>QUANTITY</span><div className="number-input record-number"><input type="number" min="0.01" max={source?.scu} step="0.01" value={quantity} onChange={(event) => setQuantity(event.target.value)} required /><span>SCU</span></div></label>
+          <label className="record-field"><span>UNIT PRICE</span><div className="number-input record-number"><input type="number" min="0.01" step="0.01" value={unitPrice} onChange={(event) => setUnitPrice(event.target.value)} required /><span>aUEC</span></div><small className="available-balance">Use the price shown at the terminal.</small></label>
+          <label className="record-field"><span>PAID INTO</span><select value={accountId} onChange={(event) => setAccountId(event.target.value)} required>{accounts.map((account) => <option key={account.id} value={account.id}>{account.name} · {formatCredits(account.balance)}</option>)}</select></label>
+        </div>
+        <div className="transfer-summary"><span>Crew shares apply to this sale.</span><strong>{total > 0 ? formatCredits(total) : 'Enter amounts'}</strong></div>
+        {error && <div className="form-error" role="alert">{error}</div>}
+        <div className="record-actions"><button className="secondary-button" type="button" onClick={onClose}>Cancel</button><button className="primary-button" type="submit" disabled={!sources.length || !quotes.length}>Record sale</button></div>
+      </form>}
+    </section>
+  </div>
 }
 
 function RecordTradeDialog({ preset, prices, accounts, crewMembers, hangarState, onClose, onSubmit, onAddAccount }: {
@@ -2911,7 +3165,7 @@ function SystemsView({ rows, terminals, prices, newLocationKeys, state, terminal
   </section>
 }
 
-function MiningView({ prices, commodities, state, methods, methodsState, yields, yieldsState, capacities, capacitiesState, search, miningOpsState, onAddScan, onRemoveScan }: {
+function MiningView({ prices, commodities, state, methods, methodsState, yields, yieldsState, capacities, capacitiesState, search, miningOpsState, onAddScan, onRemoveScan, activeShipName, onSyncCargo, tab, onTabChange, refineryNames, shipOre, refiningJobs, onStartRefining, onCollectRefining, onRemoveRefining }: {
   prices: UexRow[]
   commodities: UexRow[]
   state: DatasetState
@@ -2925,8 +3179,18 @@ function MiningView({ prices, commodities, state, methods, methodsState, yields,
   miningOpsState: MiningOpsState
   onAddScan: (scan: NewRockScan) => string
   onRemoveScan: (scanId: string) => void
+  activeShipName?: string
+  onSyncCargo: (ore: Record<string, number>) => string
+  tab: MiningTab
+  onTabChange: (tab: MiningTab) => void
+  refineryNames: string[]
+  shipOre: RefiningOre[]
+  refiningJobs: RefiningJob[]
+  onStartRefining: (order: NewRefiningOrder) => string
+  onCollectRefining: (jobId: string, refined: RefiningOre[]) => string
+  onRemoveRefining: (jobId: string) => void
 }) {
-  const [tab, setTab] = useState<'market' | 'calculator' | 'refinery' | 'scans'>('market')
+  const setTab = onTabChange
   const rawMinerals = new Set(commodities.filter((row) => readNumber(row, 'is_mineral') === 1 && readNumber(row, 'is_raw') === 1).map((row) => readText(row, 'name')))
   const normalizedSearch = search.trim().toLocaleLowerCase()
   const oreRows = prices.filter((row) => rawMinerals.has(readText(row, 'commodity_name')) || /\bore\b|mineral/i.test(readText(row, 'commodity_name')))
@@ -2941,6 +3205,7 @@ function MiningView({ prices, commodities, state, methods, methodsState, yields,
       <button type="button" role="tab" aria-selected={tab === 'market'} className={tab === 'market' ? 'selected' : ''} onClick={() => setTab('market')}>Ore market</button>
       <button type="button" role="tab" aria-selected={tab === 'calculator'} className={tab === 'calculator' ? 'selected' : ''} onClick={() => setTab('calculator')}>Sale estimator</button>
       <button type="button" role="tab" aria-selected={tab === 'refinery'} className={tab === 'refinery' ? 'selected' : ''} onClick={() => setTab('refinery')}>Refinery data</button>
+      <button type="button" role="tab" aria-selected={tab === 'refining'} className={tab === 'refining' ? 'selected' : ''} onClick={() => setTab('refining')}>Refining jobs <span>{refiningJobs.filter((job) => !job.collectedAt).length}</span></button>
       <button type="button" role="tab" aria-selected={tab === 'scans'} className={tab === 'scans' ? 'selected' : ''} onClick={() => setTab('scans')}>Rock scan log <span>{miningOpsState.scans.length}</span></button>
     </div>
     {tab === 'market' && (state.status === 'loading' || state.status === 'idle'
@@ -2954,11 +3219,12 @@ function MiningView({ prices, commodities, state, methods, methodsState, yields,
       {yieldsState.status === 'loading' || yieldsState.status === 'idle' ? <LoadingPanel label="Loading refinery yield reports" /> : yieldsState.status === 'error' ? <ErrorPanel resource="Refinery yields" message={yieldsState.error} /> : <DataPanel title="Refinery yield reports" subtitle={`${yieldRows.length} UEX reports · raw reported values`} columns={['COMMODITY', 'REFINERY', 'SYSTEM', 'CURRENT VALUE', 'WEEK', 'MONTH']} rows={yieldRows.slice(0, 400).map((row) => [readText(row, 'commodity_name'), readText(row, 'terminal_name'), readText(row, 'star_system_name') || '—', readText(row, 'value') || '—', readText(row, 'value_week') || '—', readText(row, 'value_month') || '—'])} />}
       {capacitiesState.status === 'loading' || capacitiesState.status === 'idle' ? <LoadingPanel label="Loading refinery capacity reports" /> : capacitiesState.status === 'error' ? <ErrorPanel resource="Refinery capacities" message={capacitiesState.error} /> : <DataPanel title="Refinery capacity reports" subtitle={`${capacityRows.length} UEX reports · values shown as reported`} columns={['REFINERY', 'SYSTEM', 'CURRENT VALUE', 'WEEK', 'MONTH']} rows={capacityRows.map((row) => [readText(row, 'terminal_name'), readText(row, 'star_system_name') || '—', readText(row, 'value') || '—', readText(row, 'value_week') || '—', readText(row, 'value_month') || '—'])} />}
     </div>}
-    {tab === 'scans' && <RockScanLog scans={miningOpsState.scans} minerals={commodities.filter((row) => readNumber(row, 'is_mineral') === 1 && readNumber(row, 'is_raw') === 1).map((row) => readText(row, 'name')).filter(Boolean).sort((left, right) => left.localeCompare(right))} onAdd={onAddScan} onRemove={onRemoveScan} />}
+    {tab === 'refining' && <RefiningOrders activeShipName={activeShipName} shipOre={shipOre} refineries={refineryNames} methods={methods} yields={yields} jobs={refiningJobs} onCreate={onStartRefining} onCollect={onCollectRefining} onRemove={onRemoveRefining} />}
+    {tab === 'scans' && <RockScanLog scans={miningOpsState.scans} minerals={commodities.filter((row) => readNumber(row, 'is_mineral') === 1 && readNumber(row, 'is_raw') === 1).map((row) => readText(row, 'name')).filter(Boolean).sort((left, right) => left.localeCompare(right))} onAdd={onAddScan} onRemove={onRemoveScan} activeShipName={activeShipName} onSyncCargo={onSyncCargo} />}
   </>
 }
 
-function RockScanLog({ scans, minerals, onAdd, onRemove }: { scans: RockScan[]; minerals: string[]; onAdd: (scan: NewRockScan) => string; onRemove: (scanId: string) => void }) {
+function RockScanLog({ scans, minerals, onAdd, onRemove, activeShipName, onSyncCargo }: { scans: RockScan[]; minerals: string[]; onAdd: (scan: NewRockScan) => string; onRemove: (scanId: string) => void; activeShipName?: string; onSyncCargo: (ore: Record<string, number>) => string }) {
   const [label, setLabel] = useState('')
   const [location, setLocation] = useState('')
   const [massKg, setMassKg] = useState('')
@@ -3001,7 +3267,7 @@ function RockScanLog({ scans, minerals, onAdd, onRemove }: { scans: RockScan[]; 
   }
 
   return <>
-    <ScanScreenReader scans={scans} minerals={minerals} onAdd={onAdd} />
+    <ScanScreenReader scans={scans} minerals={minerals} activeShipName={activeShipName} onAdd={onAdd} onSyncCargo={onSyncCargo} />
     <section className="data-section mining-scan-form-section">
       <div className="section-toolbar"><div><h2>Record a rock scan</h2><span>Enter the measurements shown by your in-game scanner.</span></div><span className="table-label">LOCAL SCAN LOG</span></div>
       <form className="mining-scan-form" onSubmit={submit}>

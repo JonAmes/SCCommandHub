@@ -124,6 +124,19 @@ export async function uploadSyncSnapshot(snapshot: SyncSnapshot, pairing = readP
   }
 }
 
+export type HostGameStatus = { gameLogActive: boolean; locationCode: string | null; recordedAt: string | null }
+
+export async function fetchHostGameStatus(pairing = readPairing()): Promise<HostGameStatus | null> {
+  if (!pairing) return null
+  const status = await sendJson(`${pairing.primaryUrl}/status`, {}, pairing.clientToken) as Partial<HostGameStatus> | null
+  if (!status || typeof status !== 'object') return null
+  return {
+    gameLogActive: status.gameLogActive === true,
+    locationCode: typeof status.locationCode === 'string' ? status.locationCode.slice(0, 80) : null,
+    recordedAt: typeof status.recordedAt === 'string' ? status.recordedAt : null,
+  }
+}
+
 export async function disconnectSyncClient(pairing = readPairing()) {
   if (pairing) {
     try { await sendJson(`${pairing.primaryUrl}/disconnect`, {}, pairing.clientToken) } catch {}

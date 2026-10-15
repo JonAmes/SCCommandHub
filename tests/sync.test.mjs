@@ -145,3 +145,39 @@ test('pairs through an app-specific Tailscale HTTPS URL and rejects unauthentica
     await host.stop()
   }
 })
+
+test('explains when Tailscale Serve is not enabled on the tailnet', () => {
+  const serve = createTailscaleServe({
+    findCli: () => 'tailscale',
+    run: (_cli, args) => {
+      if (args[0] !== 'serve' || args.includes('off')) return ''
+      throw Object.assign(new Error('spawnSync tailscale ETIMEDOUT'), { stdout: '\nServe is not enabled on your tailnet.\nTo enable, visit:\n\n https://login.tailscale.com/f/serve?node=abc\n' })
+    },
+  })
+  const result = serve.start(1234)
+  assert.equal(result.status, 'serve-error')
+  assert.match(result.detail, /not enabled on your tailnet.*https:\/\/login\.tailscale\.com\/f\/serve\?node=abc/)
+})
+
+test('shares Game.log status and player location only with paired clients', async () => {
+  const pairingRequests = []
+  const host = createSyncHost({ port: 0, onPairRequest: (request) => pairingRequests.push(request) })
+  try {
+    const listener = await host.start()
+    const baseUrl = `http://127.0.0.1:${listener.port}/sc-command-hub-sync`
+    const headers = { 'Content-Type': 'application/json' }
+    const denied = await fetch(`${baseUrl}/status`, { method: 'POST', headers, body: '{}' })
+    assert.equal(denied.status, 401)
+
+    await fetch(`${baseUrl}/pair`, { method: 'POST', headers, body: JSON.stringify({ code: listener.code, clientName: 'Phone' }) })
+    host.approvePairing(pairingRequests[0].requestId)
+    const credentials = await (await fetch(`${baseUrl}/pair-status`, { method: 'POST', headers, body: JSON.stringify({ requestId: pairingRequests[0].requestId }) })).json()
+    host.setGameStatus({ gameLogActive: true })
+    host.setGameStatus({ locationCode: 'RR_ARC_L1', recordedAt: '2026-10-15T15:00:00.000Z' })
+    const status = await fetch(`${baseUrl}/status`, { method: 'POST', headers: { ...headers, Authorization: `Bearer ${credentials.clientToken}` }, body: '{}' })
+    assert.equal(status.status, 200)
+    assert.deepEqual(await status.json(), { gameLogActive: true, locationCode: 'RR_ARC_L1', recordedAt: '2026-10-15T15:00:00.000Z' })
+  } finally {
+    await host.stop()
+  }
+})

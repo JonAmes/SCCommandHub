@@ -22,6 +22,7 @@ const tailscaleServe = createTailscaleServe()
 function stopGameLogMonitor() {
   gameLogMonitor?.stop()
   gameLogMonitor = undefined
+  syncHost.setGameStatus({ gameLogActive: false })
 }
 
 ipcMain.handle('star-citizen:detect', (_event, customRoots) => detectGameInstallations(Array.isArray(customRoots) ? customRoots.slice(0, 20) : []))
@@ -41,8 +42,10 @@ ipcMain.handle('star-citizen:watch-log', (event, request) => {
 
   const logPath = path.join(installation.path, 'Game.log')
   gameLogMonitor = startGameLogMonitor(logPath, channel, (gameEvent) => {
+    if (gameEvent.type === 'location') syncHost.setGameStatus({ locationCode: gameEvent.locationCode, recordedAt: gameEvent.recordedAt })
     if (!event.sender.isDestroyed()) event.sender.send('star-citizen:game-log-event', gameEvent)
   }, (status) => {
+    syncHost.setGameStatus({ gameLogActive: status === 'watching' })
     if (!event.sender.isDestroyed()) event.sender.send('star-citizen:game-log-status', status)
   })
   return { status: require('node:fs').existsSync(logPath) ? 'watching' : 'waiting-for-log' }
@@ -88,7 +91,7 @@ ipcMain.handle('sync:client-request', async (event, request) => {
   if (url.protocol !== 'https:' || !url.hostname.toLocaleLowerCase().endsWith('.ts.net') || url.username || url.password || url.search || url.hash) {
     return { status: 400, data: { error: 'invalid-sync-url' } }
   }
-  if (!['/pair', '/pair-status', '/sync', '/disconnect'].includes(url.pathname.replace(/^\/sc-command-hub-sync/, ''))) {
+  if (!['/pair', '/pair-status', '/sync', '/status', '/disconnect'].includes(url.pathname.replace(/^\/sc-command-hub-sync/, ''))) {
     return { status: 404, data: { error: 'invalid-sync-path' } }
   }
   const body = JSON.stringify(request?.data ?? {})

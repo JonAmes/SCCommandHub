@@ -46,7 +46,12 @@ function createTailscaleServe({ findCli = findTailscaleCli, run = runTailscale }
       return { status: 'ready', url: activeUrl, path: servePath, httpsPort }
     } catch (error) {
       stop()
-      const detail = [error.stderr, error.message].filter(Boolean).join(' ').slice(0, 400)
+      const output = [error.stdout, error.stderr].filter(Boolean).join(' ')
+      const enableUrl = output.match(/https:\/\/login\.tailscale\.com\/f\/serve\S*/)?.[0]
+      if (/serve is not enabled/i.test(output)) {
+        return { status: 'serve-error', detail: `Tailscale Serve is not enabled on your tailnet. Enable it${enableUrl ? ` at ${enableUrl}` : ' in the Tailscale admin console'}, then start the listener again.` }
+      }
+      const detail = [output, error.message].filter(Boolean).join(' ').slice(0, 400)
       return { status: 'serve-error', detail }
     }
   }

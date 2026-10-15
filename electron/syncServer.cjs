@@ -65,6 +65,8 @@ function createSyncHost({ onProposal = () => {}, onPairRequest = () => {}, onSta
   let failedPairingAttempts = 0
   let failedPairingWindowStart = Date.now()
   const lastUploadAt = new Map()
+  const lastStatusAt = new Map()
+  let gameStatus = { gameLogActive: false, locationCode: null, recordedAt: null }
 
   function pruneExpiredPairingState() {
     const now = Date.now()
@@ -250,6 +252,24 @@ function createSyncHost({ onProposal = () => {}, onPairRequest = () => {}, onSta
       return
     }
 
+    if (route === '/status') {
+      const authorization = request.headers.authorization ?? ''
+      const token = authorization.startsWith('Bearer ') ? authorization.slice(7) : ''
+      const pairedClient = pairedClients.get(token)
+      if (!pairedClient || pairedClient.expiresAt <= Date.now()) {
+        pairedClients.delete(token)
+        sendJson(response, 401, { error: 'client-not-paired' })
+        return
+      }
+      if (Date.now() - (lastStatusAt.get(pairedClient.clientId) ?? 0) < 1000) {
+        sendJson(response, 429, { error: 'status-rate-limited' })
+        return
+      }
+      lastStatusAt.set(pairedClient.clientId, Date.now())
+      sendJson(response, 200, gameStatus)
+      return
+    }
+
     if (route === '/sync') {
       const authorization = request.headers.authorization ?? ''
       const token = authorization.startsWith('Bearer ') ? authorization.slice(7) : ''
@@ -320,6 +340,7 @@ function createSyncHost({ onProposal = () => {}, onPairRequest = () => {}, onSta
     pendingPairings.clear()
     pairingResults.clear()
     lastUploadAt.clear()
+    lastStatusAt.clear()
     failedPairingAttempts = 0
     failedPairingWindowStart = Date.now()
     const activeServer = server
@@ -370,9 +391,18 @@ function createSyncHost({ onProposal = () => {}, onPairRequest = () => {}, onSta
     return removed
   }
 
+  function setGameStatus(update) {
+    gameStatus = {
+      gameLogActive: typeof update?.gameLogActive === 'boolean' ? update.gameLogActive : gameStatus.gameLogActive,
+      locationCode: typeof update?.locationCode === 'string' ? update.locationCode.slice(0, 80) : gameStatus.locationCode,
+      recordedAt: typeof update?.recordedAt === 'string' ? update.recordedAt.slice(0, 40) : gameStatus.recordedAt,
+    }
+  }
+
   return {
     start,
     stop,
+    setGameStatus,
     rotatePairingCode,
     approvePairing,
     rejectPairing,

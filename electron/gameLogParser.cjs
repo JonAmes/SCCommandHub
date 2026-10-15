@@ -98,6 +98,13 @@ function parseGameLogLines(lines, state) {
       const modelSlug = shipMatch[2]
       const id = crypto.createHash('sha256').update(`${timestamp}|${shipMatch[1]}|${modelSlug}|${shipMatch[3]}`).digest('hex')
       events.push({ type: 'ship', id, channel: state.channel, modelSlug, recordedAt: timestamp })
+      continue
+    }
+
+    // Opening a station/city inventory logs the player's current location code, e.g. Location[RR_ARC_L1].
+    const locationMatch = line.match(/<RequestLocationInventory>.*?Location\[([A-Za-z0-9_-]{2,80})\]/)
+    if (locationMatch && locationMatch[1].toLowerCase() !== 'unknown') {
+      events.push({ type: 'location', channel: state.channel, locationCode: locationMatch[1], recordedAt: timestamp })
     }
   }
 
