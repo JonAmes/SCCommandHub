@@ -1,5 +1,5 @@
 const path = require('node:path')
-const { app, BrowserWindow, desktopCapturer, dialog, ipcMain, session } = require('electron')
+const { app, BrowserWindow, desktopCapturer, dialog, ipcMain, session, shell } = require('electron')
 const { detectGameInstallations, normalizeGameRoot } = require('./gameDetection.cjs')
 const { startGameLogMonitor } = require('./gameLogMonitor.cjs')
 const { createSyncHost } = require('./syncServer.cjs')
@@ -76,6 +76,14 @@ ipcMain.handle('sync:host-start', async () => {
   return { ...host, address: served.url, publicUrl: served.url }
 })
 ipcMain.handle('sync:host-rotate-code', () => syncHost.isRunning() ? syncHost.rotatePairingCode() : null)
+ipcMain.handle('sync:publish-snapshot', (event, snapshot) => {
+  if (event.senderFrame !== event.sender.mainFrame || !syncHost.isRunning()) return false
+  return syncHost.setHostSnapshot(snapshot)
+})
+ipcMain.handle('sync:resolve-review', (event, clientId) => {
+  if (event.senderFrame !== event.sender.mainFrame || typeof clientId !== 'string') return false
+  return syncHost.resolveClientReview(clientId)
+})
 ipcMain.handle('sync:host-stop', async () => {
   tailscaleServe.stop()
   return syncHost.stop()
@@ -91,7 +99,7 @@ ipcMain.handle('sync:client-request', async (event, request) => {
   if (url.protocol !== 'https:' || !url.hostname.toLocaleLowerCase().endsWith('.ts.net') || url.username || url.password || url.search || url.hash) {
     return { status: 400, data: { error: 'invalid-sync-url' } }
   }
-  if (!['/pair', '/pair-status', '/sync', '/status', '/disconnect'].includes(url.pathname.replace(/^\/sc-command-hub-sync/, ''))) {
+  if (!['/pair', '/pair-status', '/sync', '/pull', '/status', '/disconnect'].includes(url.pathname.replace(/^\/sc-command-hub-sync/, ''))) {
     return { status: 404, data: { error: 'invalid-sync-path' } }
   }
   const body = JSON.stringify(request?.data ?? {})
@@ -116,6 +124,12 @@ function createWindow() {
       sandbox: true,
       preload: path.join(__dirname, 'preload.cjs'),
     },
+  })
+
+  // Release links open in the system browser; no other new windows are allowed.
+  mainWindow.webContents.setWindowOpenHandler(({ url }) => {
+    if (url.startsWith('https://github.com/JonAmes/SCCommandHub/')) void shell.openExternal(url)
+    return { action: 'deny' }
   })
 
   if (app.isPackaged) {

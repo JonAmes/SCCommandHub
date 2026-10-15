@@ -181,3 +181,41 @@ test('shares Game.log status and player location only with paired clients', asyn
     await host.stop()
   }
 })
+
+test('serves host data to paired clients and pauses updates while client changes await review', async () => {
+  const pairingRequests = []
+  const host = createSyncHost({ port: 0, onPairRequest: (request) => pairingRequests.push(request) })
+  try {
+    const listener = await host.start()
+    const baseUrl = `http://127.0.0.1:${listener.port}/sc-command-hub-sync`
+    const headers = { 'Content-Type': 'application/json' }
+    await fetch(`${baseUrl}/pair`, { method: 'POST', headers, body: JSON.stringify({ code: listener.code, clientName: 'Phone' }) })
+    host.approvePairing(pairingRequests[0].requestId)
+    const credentials = await (await fetch(`${baseUrl}/pair-status`, { method: 'POST', headers, body: JSON.stringify({ requestId: pairingRequests[0].requestId }) })).json()
+    const auth = { ...headers, Authorization: `Bearer ${credentials.clientToken}` }
+    const pull = (since) => fetch(`${baseUrl}/pull`, { method: 'POST', headers: auth, body: JSON.stringify({ since }) })
+
+    assert.equal((await fetch(`${baseUrl}/pull`, { method: 'POST', headers, body: '{}' })).status, 401)
+    assert.equal((await pull(null)).status, 503)
+    assert.equal(host.setHostSnapshot({ nope: true }), false)
+    assert.equal(host.setHostSnapshot(createSnapshot()), true)
+
+    await new Promise((resolve) => setTimeout(resolve, 1100))
+    const first = await (await pull(null)).json()
+    assert.equal(first.pendingReview, false)
+    assert.equal(first.snapshot.schemaVersion, 1)
+
+    await new Promise((resolve) => setTimeout(resolve, 1100))
+    const unchanged = await (await pull(first.version)).json()
+    assert.equal(unchanged.snapshot, undefined)
+
+    await fetch(`${baseUrl}/sync`, { method: 'POST', headers: auth, body: JSON.stringify({ snapshot: createSnapshot() }) })
+    await new Promise((resolve) => setTimeout(resolve, 1100))
+    assert.equal((await (await pull(first.version)).json()).pendingReview, true)
+    assert.equal(host.resolveClientReview(credentials.clientId), true)
+    await new Promise((resolve) => setTimeout(resolve, 1100))
+    assert.equal((await (await pull(first.version)).json()).pendingReview, false)
+  } finally {
+    await host.stop()
+  }
+})

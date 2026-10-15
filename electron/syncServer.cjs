@@ -66,6 +66,10 @@ function createSyncHost({ onProposal = () => {}, onPairRequest = () => {}, onSta
   let failedPairingWindowStart = Date.now()
   const lastUploadAt = new Map()
   const lastStatusAt = new Map()
+  const lastPullAt = new Map()
+  const clientsAwaitingReview = new Set()
+  let hostSnapshot = null
+  let hostSnapshotVersion = null
   let gameStatus = { gameLogActive: false, locationCode: null, recordedAt: null }
 
   function pruneExpiredPairingState() {
@@ -245,6 +249,7 @@ function createSyncHost({ onProposal = () => {}, onPairRequest = () => {}, onSta
         return
       }
       pairedClients.delete(token)
+      clientsAwaitingReview.delete(pairedClient.clientId)
       for (const [clientToken, client] of pairedClients) {
         if (client.clientId === pairedClient.clientId) pairedClients.delete(clientToken)
       }
@@ -267,6 +272,35 @@ function createSyncHost({ onProposal = () => {}, onPairRequest = () => {}, onSta
       }
       lastStatusAt.set(pairedClient.clientId, Date.now())
       sendJson(response, 200, gameStatus)
+      return
+    }
+
+    if (route === '/pull') {
+      const authorization = request.headers.authorization ?? ''
+      const token = authorization.startsWith('Bearer ') ? authorization.slice(7) : ''
+      const pairedClient = pairedClients.get(token)
+      if (!pairedClient || pairedClient.expiresAt <= Date.now()) {
+        pairedClients.delete(token)
+        sendJson(response, 401, { error: 'client-not-paired' })
+        return
+      }
+      if (Date.now() - (lastPullAt.get(pairedClient.clientId) ?? 0) < 1000) {
+        sendJson(response, 429, { error: 'pull-rate-limited' })
+        return
+      }
+      lastPullAt.set(pairedClient.clientId, Date.now())
+      let body
+      try { body = await readJson(request) } catch (error) {
+        sendJson(response, error.message === 'payload-too-large' ? 413 : 400, { error: error.message })
+        return
+      }
+      if (!hostSnapshot) {
+        sendJson(response, 503, { error: 'host-data-unavailable' })
+        return
+      }
+      const pendingReview = clientsAwaitingReview.has(pairedClient.clientId)
+      const upToDate = typeof body?.since === 'string' && body.since === hostSnapshotVersion
+      sendJson(response, 200, { version: hostSnapshotVersion, pendingReview, ...(upToDate ? {} : { snapshot: hostSnapshot }) })
       return
     }
 
@@ -296,6 +330,7 @@ function createSyncHost({ onProposal = () => {}, onPairRequest = () => {}, onSta
       }
 
       lastUploadAt.set(pairedClient.clientId, Date.now())
+      clientsAwaitingReview.add(pairedClient.clientId)
       onProposal({
         id: crypto.randomUUID(),
         clientId: pairedClient.clientId,
@@ -341,6 +376,10 @@ function createSyncHost({ onProposal = () => {}, onPairRequest = () => {}, onSta
     pairingResults.clear()
     lastUploadAt.clear()
     lastStatusAt.clear()
+    lastPullAt.clear()
+    clientsAwaitingReview.clear()
+    hostSnapshot = null
+    hostSnapshotVersion = null
     failedPairingAttempts = 0
     failedPairingWindowStart = Date.now()
     const activeServer = server
@@ -383,6 +422,7 @@ function createSyncHost({ onProposal = () => {}, onPairRequest = () => {}, onSta
 
   function revokeClient(clientId) {
     let removed = false
+    clientsAwaitingReview.delete(clientId)
     for (const [token, client] of pairedClients) {
       if (client.clientId !== clientId) continue
       pairedClients.delete(token)
@@ -399,9 +439,22 @@ function createSyncHost({ onProposal = () => {}, onPairRequest = () => {}, onSta
     }
   }
 
+  function setHostSnapshot(snapshot) {
+    if (!isSnapshotEnvelopeValid(snapshot)) return false
+    hostSnapshot = snapshot
+    hostSnapshotVersion = `${Date.now()}-${crypto.randomBytes(4).toString('hex')}`
+    return true
+  }
+
+  function resolveClientReview(clientId) {
+    return clientsAwaitingReview.delete(clientId)
+  }
+
   return {
     start,
     stop,
+    setHostSnapshot,
+    resolveClientReview,
     setGameStatus,
     rotatePairingCode,
     approvePairing,

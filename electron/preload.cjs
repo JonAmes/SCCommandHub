@@ -19,6 +19,8 @@ contextBridge.exposeInMainWorld('starCitizenBridge', {
   selectScreenSource: (sourceId) => ipcRenderer.invoke('screen-reader:select-source', sourceId),
   startSyncHost: () => ipcRenderer.invoke('sync:host-start'),
   rotateSyncPairingCode: () => ipcRenderer.invoke('sync:host-rotate-code'),
+  publishSyncSnapshot: (snapshot) => ipcRenderer.invoke('sync:publish-snapshot', snapshot),
+  resolveSyncReview: (clientId) => ipcRenderer.invoke('sync:resolve-review', clientId),
   stopSyncHost: () => ipcRenderer.invoke('sync:host-stop'),
   listSyncClients: () => ipcRenderer.invoke('sync:list-clients'),
   revokeSyncClient: (clientId) => ipcRenderer.invoke('sync:revoke-client', clientId),

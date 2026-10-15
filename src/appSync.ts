@@ -4,6 +4,8 @@ import type { HangarState } from './hangar'
 import type { GameLogState, PendingGameTransaction } from './gameLog'
 import type { MiningOpsState } from './miningOps'
 import type { PlannedRoute } from './routePlanner'
+import type { RefiningState } from './refining'
+import type { LocationCargoState } from './locationCargo'
 
 export type SyncSnapshot = {
   schemaVersion: 1
@@ -17,6 +19,8 @@ export type SyncSnapshot = {
     gameLog: GameLogState
     marketPriceHistory: MarketPriceSnapshot[]
     systemIndexSnapshot: { locationKeys: string[]; newLocationKeys: string[] } | null
+    refining?: RefiningState
+    locationCargo?: LocationCargoState
     preferences: {
       theme: 'field' | 'amber' | 'ice' | 'night' | 'redshift'
       gameChannel: 'LIVE' | 'PTU'
@@ -27,12 +31,13 @@ export type SyncSnapshot = {
 
 export type SyncProposal = {
   id: string
+  clientId?: string
   clientName: string
   receivedAt: string
   snapshot: SyncSnapshot
 }
 
-type MergeCategory = 'accounts' | 'ledger' | 'ships' | 'ship cargo' | 'crew members' | 'crew roles' | 'routes' | 'mining scans' | 'pending Game.log events' | 'market history'
+type MergeCategory = 'accounts' | 'ledger' | 'ships' | 'ship cargo' | 'crew members' | 'crew roles' | 'routes' | 'mining scans' | 'refining jobs' | 'stored cargo' | 'pending Game.log events' | 'market history'
 export type MarketPriceSnapshot = { capturedAt: number; prices: { commodityId: string; commodityName: string; buyPrice: number | null; sellPrice: number | null }[] }
 type MergeStats = Record<MergeCategory, { added: number; duplicates: number; conflicts: number }>
 
@@ -43,7 +48,7 @@ export type SyncMergePreview = {
   accountBalanceChanges: { accountId: string; accountName: string; previousBalance: number | null; nextBalance: number }[]
 }
 
-const categories: MergeCategory[] = ['accounts', 'ledger', 'ships', 'ship cargo', 'crew members', 'crew roles', 'routes', 'mining scans', 'pending Game.log events', 'market history']
+const categories: MergeCategory[] = ['accounts', 'ledger', 'ships', 'ship cargo', 'crew members', 'crew roles', 'routes', 'mining scans', 'refining jobs', 'stored cargo', 'pending Game.log events', 'market history']
 
 function emptyStats(): MergeStats {
   return Object.fromEntries(categories.map((category) => [category, { added: 0, duplicates: 0, conflicts: 0 }])) as MergeStats
@@ -67,7 +72,7 @@ function mergeRecords<T>(primary: T[], incoming: T[], getId: (item: T) => string
       stats[category].duplicates += 1
     } else {
       stats[category].conflicts += 1
-      conflicts.push(`${category}: matching ID ${id}; kept the primary record.`)
+      conflicts.push(`${category}: matching ID ${id}; kept the host record.`)
     }
   }
   return merged
@@ -87,7 +92,7 @@ function mergeAccounts(primary: BankAccount[], incoming: BankAccount[], stats: M
       if (sameValue(idMatch, account)) stats.accounts.duplicates += 1
       else {
         stats.accounts.conflicts += 1
-        conflicts.push(`accounts: ${account.name} has a different balance or metadata; kept the primary account.`)
+        conflicts.push(`accounts: ${account.name} has a different balance or metadata; kept the host account.`)
       }
       continue
     }
@@ -96,7 +101,7 @@ function mergeAccounts(primary: BankAccount[], incoming: BankAccount[], stats: M
     if (nameMatch) {
       accountMap.set(account.id, nameMatch)
       stats.accounts.conflicts += 1
-      conflicts.push(`accounts: ${account.name} has different IDs on each device; linked incoming activity to the primary account.`)
+      conflicts.push(`accounts: ${account.name} has different IDs on each device; linked incoming activity to the host account.`)
       continue
     }
 
@@ -165,6 +170,8 @@ export function validateSyncSnapshot(value: unknown): value is SyncSnapshot {
   if (data.systemIndexSnapshot !== null && (!data.systemIndexSnapshot.locationKeys.every((key) => typeof key === 'string') || !data.systemIndexSnapshot.newLocationKeys.every((key) => typeof key === 'string'))) return false
   if (!data.preferences || !['field', 'amber', 'ice', 'night', 'redshift'].includes(data.preferences.theme)) return false
   if (data.preferences.gameChannel !== 'LIVE' && data.preferences.gameChannel !== 'PTU') return false
+  if (data.refining !== undefined && (!isObject(data.refining) || !Array.isArray(data.refining.jobs) || data.refining.jobs.length > 2000 || !data.refining.jobs.every((job) => hasId(job) && Array.isArray(job.ores) && typeof job.completesAt === 'string'))) return false
+  if (data.locationCargo !== undefined && (!isObject(data.locationCargo) || !isObject(data.locationCargo.byLocation) || !Object.values(data.locationCargo.byLocation).every((cargo) => isObject(cargo) && Object.values(cargo).every((quantity) => typeof quantity === 'number' && Number.isFinite(quantity) && quantity >= 0)))) return false
   return true
 }
 
@@ -274,7 +281,7 @@ export function previewSyncMerge(primary: SyncSnapshot, incoming: SyncSnapshot):
         stats['ship cargo'].duplicates += 1
       } else {
         stats['ship cargo'].conflicts += 1
-        conflicts.push(`ship cargo: ${commodity} differs for ship ${targetShipId}; kept the primary quantity.`)
+        conflicts.push(`ship cargo: ${commodity} differs for ship ${targetShipId}; kept the host quantity.`)
       }
     }
     cargoByShip[targetShipId] = mergedCargo
@@ -298,6 +305,22 @@ export function previewSyncMerge(primary: SyncSnapshot, incoming: SyncSnapshot):
   }))
   const routes = mergeRecords(primary.data.routes, incomingRoutes, (item) => item.id, 'routes', stats, conflicts)
   const scans = mergeRecords(primary.data.miningOps.scans, incoming.data.miningOps.scans, (item) => item.id, 'mining scans', stats, conflicts)
+  const refiningJobs = mergeRecords(primary.data.refining?.jobs ?? [], incoming.data.refining?.jobs ?? [], (item) => item.id, 'refining jobs', stats, conflicts)
+  const storedCargo: Record<string, Record<string, number>> = Object.fromEntries(Object.entries(primary.data.locationCargo?.byLocation ?? {}).map(([location, cargo]) => [location, { ...cargo }]))
+  for (const [location, cargo] of Object.entries(incoming.data.locationCargo?.byLocation ?? {})) {
+    const target = storedCargo[location] ?? (storedCargo[location] = {})
+    for (const [commodity, quantity] of Object.entries(cargo)) {
+      if (target[commodity] === undefined) {
+        target[commodity] = quantity
+        stats['stored cargo'].added += 1
+      } else if (target[commodity] === quantity) {
+        stats['stored cargo'].duplicates += 1
+      } else {
+        stats['stored cargo'].conflicts += 1
+        conflicts.push(`stored cargo: ${commodity} at ${location} differs; kept the host quantity.`)
+      }
+    }
+  }
   const marketPriceHistory = mergeRecords(primary.data.marketPriceHistory, incoming.data.marketPriceHistory, (snapshot) => String(snapshot.capturedAt), 'market history', stats, conflicts)
     .sort((left, right) => left.capturedAt - right.capturedAt)
     .slice(-300)
@@ -309,7 +332,7 @@ export function previewSyncMerge(primary: SyncSnapshot, incoming: SyncSnapshot):
   } : null
   const incomingPreferences = incoming.data.preferences
   if (!sameValue(primary.data.preferences, incomingPreferences)) {
-    conflicts.push('Preferences differ; kept the primary device preferences.')
+    conflicts.push('Preferences differ; kept the host device preferences.')
   }
 
   return {
@@ -329,6 +352,8 @@ export function previewSyncMerge(primary: SyncSnapshot, incoming: SyncSnapshot):
         },
         marketPriceHistory,
         systemIndexSnapshot,
+        refining: { jobs: refiningJobs },
+        locationCargo: { byLocation: storedCargo },
         preferences: primary.data.preferences,
       },
     },
@@ -338,7 +363,7 @@ export function previewSyncMerge(primary: SyncSnapshot, incoming: SyncSnapshot):
   }
 }
 
-export function persistSyncSnapshot(snapshot: SyncSnapshot) {
+export function persistSyncSnapshot(snapshot: SyncSnapshot, options: { keepLocalPreferences?: boolean } = {}) {
   const profile = snapshot.data.preferences.workspaceMode
     ? { mode: snapshot.data.preferences.workspaceMode, completedAt: new Date().toISOString() }
     : { skipped: true, completedAt: new Date().toISOString() }
@@ -351,9 +376,13 @@ export function persistSyncSnapshot(snapshot: SyncSnapshot) {
     ['sc-command-hub.game-log-v1', JSON.stringify(snapshot.data.gameLog)],
     ['sc-command-hub.market-price-history-v1', JSON.stringify(snapshot.data.marketPriceHistory.slice(-300))],
     ['sc-command-hub.system-index-v1', JSON.stringify(snapshot.data.systemIndexSnapshot)],
-    ['sc-command-hub.theme-v1', snapshot.data.preferences.theme],
-    ['sc-command-hub.game-channel-v1', snapshot.data.preferences.gameChannel],
-    ['sc-command-hub.setup-profile-v1', JSON.stringify(profile)],
+    ...(options.keepLocalPreferences ? [] : [
+      ['sc-command-hub.theme-v1', snapshot.data.preferences.theme],
+      ['sc-command-hub.game-channel-v1', snapshot.data.preferences.gameChannel],
+      ['sc-command-hub.setup-profile-v1', JSON.stringify(profile)],
+    ] as [string, string][]),
+    ...(snapshot.data.refining ? [['sc-command-hub.refining-v1', JSON.stringify(snapshot.data.refining)] as [string, string]] : []),
+    ...(snapshot.data.locationCargo ? [['sc-command-hub.location-cargo-v1', JSON.stringify(snapshot.data.locationCargo)] as [string, string]] : []),
   ]
   let previous: readonly (readonly [string, string | null])[] = []
   try {

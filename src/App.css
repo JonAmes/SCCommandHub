@@ -27,7 +27,13 @@
 .sidebar-foot { border-top: 1px solid #39443c; padding: 12px 10px 0; display: flex; justify-content: space-between; color: #77857a; font: 8px var(--mono); }
 
 .main-column { min-width: 0; }
-.topbar { height: 63px; padding: 0 35px; display: flex; align-items: center; justify-content: space-between; background: #fff; border-bottom: 1px solid var(--line); }
+.topbar { position: relative; height: 63px; padding: 0 35px; display: flex; align-items: center; justify-content: space-between; background: #fff; border-bottom: 1px solid var(--line); }
+.update-status { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); display: flex; align-items: center; gap: 8px; padding: 6px 6px 6px 11px; border: 1px solid var(--focus); background: var(--surface, #fff); font: 9px var(--mono); white-space: nowrap; z-index: 2; }
+.update-status a { color: var(--ink); font-weight: 600; text-decoration: none; }
+.update-status a:hover { text-decoration: underline; }
+.update-status button { width: 20px; height: 20px; border: 0; background: transparent; color: var(--muted); font-size: 14px; line-height: 1; cursor: pointer; }
+.update-status button:hover { color: var(--ink); }
+@media (max-width: 900px) { .update-status { position: static; transform: none; } }
 .breadcrumb { display: flex; align-items: center; gap: 10px; color: #98a198; font: 9px var(--mono); }
 .breadcrumb strong { color: #58635b; font-weight: 500; }
 .crumb-separator { color: #c4ccc4; }
@@ -1229,6 +1235,64 @@
 
 :root:is([data-theme='night'], [data-theme='redshift']) .primary-button { background: var(--lime); color: var(--sidebar); }
 :root:is([data-theme='night'], [data-theme='redshift']) .primary-button:hover { filter: brightness(1.08); }
+:root:is([data-theme='night'], [data-theme='redshift']) .secondary-button { border-color: var(--border-input); background: var(--surface-raised); }
+:root:is([data-theme='night'], [data-theme='redshift']) .secondary-button:hover:not(:disabled) { border-color: var(--focus); background: var(--surface-hover); }
+:root:is([data-theme='night'], [data-theme='redshift']) .text-button { color: var(--focus); }
+:root:is([data-theme='night'], [data-theme='redshift']) .text-button:disabled { color: var(--quiet); }
+:root:is([data-theme='night'], [data-theme='redshift']) .finance-tabs button { color: var(--muted); }
+:root:is([data-theme='night'], [data-theme='redshift']) .finance-tabs button span { color: var(--quiet); }
+:root:is([data-theme='night'], [data-theme='redshift']) .finance-tabs button.selected { border-bottom-color: var(--lime); color: var(--ink); }
+:root:is([data-theme='night'], [data-theme='redshift']) .remove-account { color: var(--red); }
+:root:is([data-theme='night'], [data-theme='redshift']) .remove-account:hover { border-color: var(--line); background: var(--surface-hover); }
+:root:is([data-theme='night'], [data-theme='redshift']) .danger-button { border-color: var(--red); background: transparent; color: var(--red); }
+:root:is([data-theme='night'], [data-theme='redshift']) .danger-button:hover:not(:disabled) { border-color: var(--red); background: var(--surface-hover); }
+:root:is([data-theme='night'], [data-theme='redshift']) .holdings-sell-button { border-color: var(--border-input); background: var(--surface-raised); color: var(--green); }
+:root:is([data-theme='night'], [data-theme='redshift']) .holdings-sell-button:hover:not(:disabled) { background: var(--surface-hover); }
+:root:is([data-theme='night'], [data-theme='redshift']) .holdings-sell-button:disabled { border-color: var(--line); background: transparent; color: var(--quiet); }
+:root:is([data-theme='night'], [data-theme='redshift']) .holdings-sell-button.is-here,
+:root:is([data-theme='night'], [data-theme='redshift']) .refining-status.ready { border-color: var(--green); background: var(--green); color: var(--sidebar); }
+:root:is([data-theme='night'], [data-theme='redshift']) .holdings-route-button:disabled,
+:root:is([data-theme='night'], [data-theme='redshift']) .refining-status { border-color: var(--line); color: var(--muted); }
+:root:is([data-theme='night'], [data-theme='redshift']) .refining-status.processing,
+:root:is([data-theme='night'], [data-theme='redshift']) .holdings-route-button { border-color: var(--focus); color: var(--focus); }
+:root:is([data-theme='night'], [data-theme='redshift']) .primary-button:disabled,
+:root:is([data-theme='night'], [data-theme='redshift']) .danger-button:disabled { opacity: 1; border-color: var(--line); background: var(--surface-raised); color: var(--quiet); }
+:root:is([data-theme='night'], [data-theme='redshift']) .secondary-button:disabled { opacity: 1; border-color: var(--line); background: transparent; color: var(--quiet); }
+:root:is([data-theme='night'], [data-theme='redshift']) .side-switch { background: var(--surface-inset); }
+:root:is([data-theme='night'], [data-theme='redshift']) .side-switch button { color: var(--muted); }
+:root:is([data-theme='night'], [data-theme='redshift']) .side-switch button.active { border-color: var(--border-input); background: var(--surface-raised); color: var(--green); }
+:root:is([data-theme='night'], [data-theme='redshift']) .side-switch button.active.sell-active { color: var(--red); }
+:root:is([data-theme='night'], [data-theme='redshift']) .permanent-toggle { border-color: var(--line); background: var(--surface-raised); color: var(--muted); }
+:root:is([data-theme='night'], [data-theme='redshift']) .permanent-toggle:hover,
+:root:is([data-theme='night'], [data-theme='redshift']) .permanent-toggle.is-permanent { border-color: #c9a64a; background: var(--surface-hover); color: #f0c860; }
+:root:is([data-theme='night'], [data-theme='redshift']) .holdings-summary > div > strong,
+:root:is([data-theme='night'], [data-theme='redshift']) .holding-quantity { color: var(--ink) !important; }
+:root:is([data-theme='night'], [data-theme='redshift']) .cargo-container-field select,
+:root:is([data-theme='night'], [data-theme='redshift']) .cargo-container-count .number-input { border-color: var(--border-input); background: var(--surface-inset); color: var(--ink); }
+:root:is([data-theme='night'], [data-theme='redshift']) .cargo-container-count .number-input input { background: transparent; color: var(--ink); }
+:root:is([data-theme='night'], [data-theme='redshift']) .number-input input,
+:root:is([data-theme='night'], [data-theme='redshift']) .record-number input,
+:root:is([data-theme='night'], [data-theme='redshift']) .dashboard-route-heading > div > strong,
+:root:is([data-theme='night'], [data-theme='redshift']) .dashboard-route-legs strong,
+:root:is([data-theme='night'], [data-theme='redshift']) .hangar-ship-info strong,
+:root:is([data-theme='night'], [data-theme='redshift']) .crew-overview strong,
+:root:is([data-theme='night'], [data-theme='redshift']) .transfer-summary strong,
+:root:is([data-theme='night'], [data-theme='redshift']) .mining-estimate > div > strong { color: var(--ink); }
+:root:is([data-theme='night'], [data-theme='redshift']) .vehicle-affordable-filter { color: var(--muted); }
+:root:is([data-theme='night'], [data-theme='redshift']) .ship-capacity > strong { color: var(--ink); }
+:root:is([data-theme='night'], [data-theme='redshift']) .ship-capacity > span,
+:root:is([data-theme='night'], [data-theme='redshift']) .mining-estimate > div > span,
+:root:is([data-theme='night'], [data-theme='redshift']) .mining-estimate > p { color: var(--muted); }
+:root:is([data-theme='night'], [data-theme='redshift']) .mining-estimate { background: var(--surface-accent); color: var(--ink); }
+:root:is([data-theme='night'], [data-theme='redshift']) .mining-estimate.warning { background: var(--surface-hover); color: var(--red); }
+:root:is([data-theme='night'], [data-theme='redshift']) .mining-estimate.warning > div > strong { color: var(--red); }
+:root:is([data-theme='night'], [data-theme='redshift']) .banner-symbol { border-color: var(--lime); color: var(--lime); }
+:root:is([data-theme='night'], [data-theme='redshift']) .active-ship-panel { background: var(--surface-accent); }
+:root:is([data-theme='night'], [data-theme='redshift']) .active-ship-tag,
+:root:is([data-theme='night'], [data-theme='redshift']) .hangar-ship-details:hover .hangar-ship-info strong { color: var(--lime); }
+:root:is([data-theme='night'], [data-theme='redshift']) .account-form .number-input,
+:root:is([data-theme='night'], [data-theme='redshift']) .crew-add-form .number-input,
+:root:is([data-theme='night'], [data-theme='redshift']) .crew-share-form .number-input { border-color: var(--border-input); background: var(--surface-inset); }
 :root:is([data-theme='night'], [data-theme='redshift']) .secondary-button,
 :root:is([data-theme='night'], [data-theme='redshift']) .icon-button,
 :root:is([data-theme='night'], [data-theme='redshift']) .settings-button { color: var(--ink); }

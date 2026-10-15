@@ -4,9 +4,10 @@ import { Capacitor } from '@capacitor/core'
 import { Directory, Encoding, Filesystem } from '@capacitor/filesystem'
 import { Share } from '@capacitor/share'
 import { previewSyncMerge, persistSyncSnapshot, validateSyncSnapshot, type SyncMergePreview, type SyncProposal, type SyncSnapshot } from './appSync'
-import { disconnectSyncClient, fetchHostGameStatus, getSyncClientPairing, pairSyncClient, uploadSyncSnapshot, type SyncClientPairing } from './syncClient'
+import { disconnectSyncClient, fetchHostGameStatus, getSyncClientPairing, pairSyncClient, pullHostSnapshot, uploadSyncSnapshot, type SyncClientPairing } from './syncClient'
 import { formatLocationCode, isAtLocation } from './playerLocation'
 import { SyncSettings } from './SyncSettings'
+import { UpdateStatus } from './UpdateStatus'
 import { ScanScreenReader } from './ScanScreenReader'
 import './App.css'
 import { clearUexCache, getUexData, readNumber, readText, type UexRow } from './uex'
@@ -44,9 +45,9 @@ type GameInstallation = { channel: GameChannel; path: string }
 type GameScanStatus = 'checking' | 'ready' | 'unavailable' | 'error'
 type GameLogStatus = 'idle' | 'watching' | 'waiting' | 'waiting-for-log' | 'installation-not-found' | 'invalid-channel' | 'error' | 'unavailable'
 type GameLogEvent = ({ type: 'transaction' } & PendingGameTransaction) | { type: 'ship'; id: string; channel: GameChannel; modelSlug: string; recordedAt: string } | { type: 'location'; channel: GameChannel; locationCode: string; recordedAt: string }
-type PlayerLocation = { code: string; recordedAt: string; source: 'game-log' | 'primary' }
+type PlayerLocation = { code: string; recordedAt: string; source: 'game-log' | 'host' }
 type SyncHostStatus = 'stopped' | 'listening' | 'tailscale-cli-not-found' | 'tailscale-dns-unavailable' | 'serve-error' | 'port-in-use' | 'start-error'
-type SyncClientStatus = 'idle' | 'pairing' | 'paired' | 'syncing' | 'uploaded' | 'error'
+type SyncClientStatus = 'idle' | 'pairing' | 'paired' | 'syncing' | 'synced' | 'awaiting-review' | 'error'
 type SyncHostInfo = { status: SyncHostStatus; address?: string; publicUrl?: string; port?: number; code?: string; expiresAt?: string; detail?: string }
 type SyncMergeReview = { proposal: SyncProposal; preview: SyncMergePreview }
 type SyncPairRequest = { requestId: string; clientName: string; sourceAddress: string; expiresAt: string }
@@ -63,6 +64,8 @@ declare global {
       onGameLogStatus?: (callback: (status: GameLogStatus) => void) => () => void
       startSyncHost?: () => Promise<SyncHostInfo>
       rotateSyncPairingCode?: () => Promise<{ code: string; expiresAt: string } | null>
+      publishSyncSnapshot?: (snapshot: SyncSnapshot) => Promise<boolean>
+      resolveSyncReview?: (clientId: string) => Promise<boolean>
       stopSyncHost?: () => Promise<boolean>
       listSyncClients?: () => Promise<SyncPairedClient[]>
       revokeSyncClient?: (clientId: string) => Promise<boolean>
@@ -75,6 +78,36 @@ declare global {
       selectScreenSource?: (sourceId: string | null) => Promise<boolean>
     }
   }
+}
+
+const clientSyncStateKey = 'sc-command-hub.sync-client-state-v1'
+const clientSyncIntervalMs = 30_000
+type ClientSyncState = { baseSignature: string | null; version: string | null; uploadedSignature: string | null }
+
+function readClientSyncState(): ClientSyncState {
+  try {
+    const value: unknown = JSON.parse(window.localStorage.getItem(clientSyncStateKey) ?? 'null')
+    if (value && typeof value === 'object') {
+      const state = value as Partial<ClientSyncState>
+      const text = (item: unknown) => typeof item === 'string' ? item : null
+      return { baseSignature: text(state.baseSignature), version: text(state.version), uploadedSignature: text(state.uploadedSignature) }
+    }
+  } catch { /* fall through to a fresh state */ }
+  return { baseSignature: null, version: null, uploadedSignature: null }
+}
+
+function writeClientSyncState(state: ClientSyncState) {
+  try { window.localStorage.setItem(clientSyncStateKey, JSON.stringify(state)) } catch { /* sync still works for this session */ }
+}
+
+function clearClientSyncState() {
+  try { window.localStorage.removeItem(clientSyncStateKey) } catch { /* nothing stored */ }
+}
+
+// Compares shared records only; market history, system index, and preferences are device-local.
+function syncDataSignature(snapshot: SyncSnapshot) {
+  const { finance, hangar, crew, routes, miningOps, gameLog, refining, locationCargo } = snapshot.data
+  return JSON.stringify([finance, hangar, crew, routes, miningOps, gameLog, refining ?? { jobs: [] }, locationCargo ?? { byLocation: {} }])
 }
 
 function getStoredGameChannel(): GameChannel {
@@ -378,12 +411,13 @@ function App() {
   const [syncClientPairing, setSyncClientPairing] = useState<SyncClientPairing | null>(getSyncClientPairing)
   const [syncClientStatus, setSyncClientStatus] = useState<SyncClientStatus>(() => getSyncClientPairing() ? 'paired' : 'idle')
   const [playerLocation, setPlayerLocation] = useState<PlayerLocation | null>(null)
-  const [primaryGameLogActive, setPrimaryGameLogActive] = useState(false)
-  const [syncLastUploadedAt, setSyncLastUploadedAt] = useState('')
+  const [hostGameLogActive, setHostGameLogActive] = useState(false)
+  const [syncLastSyncedAt, setSyncLastSyncedAt] = useState('')
   const [syncError, setSyncError] = useState('')
   const gameLogStateRef = useRef(gameLogState)
   const hangarStateRef = useRef(hangarState)
   const financeStateRef = useRef(financeState)
+  const clientSyncBusyRef = useRef(false)
 
   function createSyncSnapshot(): SyncSnapshot {
     return {
@@ -398,12 +432,40 @@ function App() {
         gameLog: gameLogState,
         marketPriceHistory: marketHistory,
         systemIndexSnapshot: getStoredSystemIndexSnapshot(),
+        refining: refiningState,
+        locationCargo,
         preferences: { theme, gameChannel, workspaceMode },
       },
     }
   }
 
   const captureSyncSnapshot = useEffectEvent(createSyncSnapshot)
+
+  function applySnapshotToState(snapshot: SyncSnapshot, keepLocalPreferences: boolean) {
+    if (!persistSyncSnapshot(snapshot, { keepLocalPreferences })) return false
+    financeStateRef.current = snapshot.data.finance
+    hangarStateRef.current = snapshot.data.hangar
+    gameLogStateRef.current = snapshot.data.gameLog
+    setFinanceState(snapshot.data.finance)
+    setHangarState(snapshot.data.hangar)
+    setCrewState(snapshot.data.crew)
+    setRoutePlans(snapshot.data.routes)
+    setMiningOpsState(snapshot.data.miningOps)
+    setGameLogState(snapshot.data.gameLog)
+    setRefiningState(snapshot.data.refining ?? { jobs: [] })
+    setLocationCargo(snapshot.data.locationCargo ?? { byLocation: {} })
+    setMarketHistory(snapshot.data.marketPriceHistory)
+    saveMarketPriceHistory(snapshot.data.marketPriceHistory)
+    setNewLocationKeys(new Set(snapshot.data.systemIndexSnapshot?.newLocationKeys ?? []))
+    if (!keepLocalPreferences) {
+      setTheme(snapshot.data.preferences.theme)
+      setGameChannel(snapshot.data.preferences.gameChannel)
+      setWorkspaceMode(snapshot.data.preferences.workspaceMode)
+      setSetupOpen(false)
+      setGameScanRevision((revision) => revision + 1)
+    }
+    return true
+  }
 
   useEffect(() => {
     const bridge = window.starCitizenBridge
@@ -422,25 +484,71 @@ function App() {
         return
       }
       setSyncError('')
-      setSyncProposals((previous) => [proposal, ...previous.filter((item) => item.id !== proposal.id)].slice(0, 10))
+      // Each client keeps one rolling proposal; a newer upload replaces the older one.
+      setSyncProposals((previous) => [proposal, ...previous.filter((item) => item.id !== proposal.id && (!proposal.clientId || item.clientId !== proposal.clientId))].slice(0, 10))
     })
   }, [])
+
+  // Host: publish the current data so paired clients can pull it.
+  useEffect(() => {
+    if (syncHostInfo.status !== 'listening') return
+    const timer = window.setTimeout(() => { void window.starCitizenBridge?.publishSyncSnapshot?.(captureSyncSnapshot()) }, 1000)
+    return () => window.clearTimeout(timer)
+  }, [syncHostInfo.status, financeState, hangarState, crewState, routePlans, miningOpsState, gameLogState, refiningState, locationCargo, marketHistory, newLocationKeys, theme, gameChannel, workspaceMode])
+
+  const runClientSync = useEffectEvent(async (pairing: SyncClientPairing) => {
+    if (clientSyncBusyRef.current) return
+    clientSyncBusyRef.current = true
+    setSyncClientStatus('syncing')
+    try {
+      const base = readClientSyncState()
+      const local = createSyncSnapshot()
+      const localSignature = syncDataSignature(local)
+      const localChanged = localSignature !== base.baseSignature
+      if (localChanged && localSignature !== base.uploadedSignature) {
+        await uploadSyncSnapshot(local, pairing)
+        base.uploadedSignature = localSignature
+        writeClientSyncState(base)
+      }
+      const result = await pullHostSnapshot(localChanged ? null : base.version, pairing)
+      if (result.pendingReview) {
+        setSyncClientStatus('awaiting-review')
+        setSyncError('')
+        return
+      }
+      if (result.snapshot) {
+        if (!validateSyncSnapshot(result.snapshot)) throw new Error('The host sent invalid app data.')
+        if (!applySnapshotToState(result.snapshot, true)) throw new Error('Could not save host data on this device.')
+        writeClientSyncState({ baseSignature: syncDataSignature(result.snapshot), version: result.version, uploadedSignature: null })
+      }
+      setSyncLastSyncedAt(new Date().toISOString())
+      setSyncClientStatus('synced')
+      setSyncError('')
+    } catch (error) {
+      setSyncClientStatus('error')
+      setSyncError(error instanceof Error ? error.message : 'Unable to sync with the host.')
+    } finally {
+      clientSyncBusyRef.current = false
+    }
+  })
+
+  // Client: pull host data on an interval and send local edits for host review.
+  useEffect(() => {
+    if (!syncClientPairing) return
+    void runClientSync(syncClientPairing)
+    const timer = window.setInterval(() => { void runClientSync(syncClientPairing) }, clientSyncIntervalMs)
+    return () => window.clearInterval(timer)
+  }, [syncClientPairing])
 
   useEffect(() => {
     if (!syncClientPairing) return
     const timer = window.setTimeout(() => {
-      setSyncClientStatus('syncing')
-      void uploadSyncSnapshot(captureSyncSnapshot(), syncClientPairing).then(() => {
-        setSyncClientStatus('uploaded')
-        setSyncLastUploadedAt(new Date().toISOString())
-        setSyncError('')
-      }).catch((error) => {
-        setSyncClientStatus('error')
-        setSyncError(error instanceof Error ? error.message : 'Unable to upload app data.')
-      })
-    }, 1500)
+      const base = readClientSyncState()
+      const signature = syncDataSignature(captureSyncSnapshot())
+      if (base.baseSignature && signature !== base.baseSignature && signature !== base.uploadedSignature) void runClientSync(syncClientPairing)
+    }, 3000)
     return () => window.clearTimeout(timer)
-  }, [syncClientPairing, financeState, hangarState, crewState, routePlans, miningOpsState, gameLogState, marketHistory, newLocationKeys, theme, gameChannel, workspaceMode])
+  }, [syncClientPairing, financeState, hangarState, crewState, routePlans, miningOpsState, gameLogState, refiningState, locationCargo])
 
   async function startSyncHost() {
     try {
@@ -448,10 +556,10 @@ function App() {
       if (!result) return
       setSyncHostInfo(result)
       setSyncPairedClients(result.status === 'listening' ? await window.starCitizenBridge?.listSyncClients?.() ?? [] : [])
-      setSyncError(result.status === 'listening' ? '' : result.status === 'tailscale-cli-not-found' ? 'Install and sign in to Tailscale before hosting.' : result.status === 'tailscale-dns-unavailable' ? 'Tailscale Serve could not obtain a MagicDNS certificate.' : result.status === 'serve-error' ? result.detail || 'Tailscale Serve could not start.' : 'Unable to start the sync listener.')
+      setSyncError(result.status === 'listening' ? '' : result.status === 'tailscale-cli-not-found' ? 'Install and sign in to Tailscale before hosting.' : result.status === 'tailscale-dns-unavailable' ? 'Tailscale Serve could not obtain a MagicDNS certificate.' : result.status === 'serve-error' ? result.detail || 'Tailscale Serve could not start.' : 'Unable to start the sync host.')
     } catch {
       setSyncHostInfo({ status: 'start-error' })
-      setSyncError('Unable to start the sync listener.')
+      setSyncError('Unable to start the sync host.')
     }
   }
 
@@ -487,40 +595,32 @@ function App() {
     if (revoked) setSyncPairedClients((previous) => previous.filter((client) => client.clientId !== clientId))
   }
 
-  async function connectSyncClient(primaryUrl: string, code: string, clientName: string) {
+  async function connectSyncClient(hostUrl: string, code: string, clientName: string) {
     setSyncClientStatus('pairing')
     setSyncError('')
     try {
-      const pairing = await pairSyncClient(primaryUrl, code, clientName)
+      const pairing = await pairSyncClient(hostUrl, code, clientName)
+      writeClientSyncState({ baseSignature: null, version: null, uploadedSignature: null })
       setSyncClientPairing(pairing)
       setSyncClientStatus('paired')
       setSyncError('')
     } catch (error) {
       setSyncClientStatus('error')
-      setSyncError(error instanceof Error ? error.message : 'Unable to pair with the primary.')
+      setSyncError(error instanceof Error ? error.message : 'Unable to pair with the host.')
     }
   }
 
   async function disconnectSync() {
     await disconnectSyncClient(syncClientPairing ?? undefined)
+    clearClientSyncState()
     setSyncClientPairing(null)
     setSyncClientStatus('idle')
-    setSyncLastUploadedAt('')
+    setSyncLastSyncedAt('')
     setSyncError('')
   }
 
-  async function uploadNow() {
-    if (!syncClientPairing) return
-    setSyncClientStatus('syncing')
-    setSyncError('')
-    try {
-      await uploadSyncSnapshot(createSyncSnapshot(), syncClientPairing)
-      setSyncClientStatus('uploaded')
-      setSyncLastUploadedAt(new Date().toISOString())
-    } catch (error) {
-      setSyncClientStatus('error')
-      setSyncError(error instanceof Error ? error.message : 'Unable to upload app data.')
-    }
+  function syncNow() {
+    if (syncClientPairing) void runClientSync(syncClientPairing)
   }
 
   function openSyncMergeReview(proposal: SyncProposal) {
@@ -532,38 +632,22 @@ function App() {
   }
 
   function dismissSyncProposal(proposalId: string) {
-    setSyncProposals((previous) => previous.filter((proposal) => proposal.id !== proposalId))
+    const proposal = syncProposals.find((item) => item.id === proposalId)
+    if (proposal?.clientId) void window.starCitizenBridge?.resolveSyncReview?.(proposal.clientId)
+    setSyncProposals((previous) => previous.filter((item) => item.id !== proposalId))
     if (syncMergeReview?.proposal.id === proposalId) setSyncMergeReview(null)
   }
 
   function applySyncMerge() {
     if (!syncMergeReview) return
     const merged = syncMergeReview.preview.snapshot
-    if (!persistSyncSnapshot(merged)) {
+    if (!applySnapshotToState(merged, false)) {
       setSyncError('Could not save the merged snapshot. No sync changes were applied.')
       return
     }
-
-    financeStateRef.current = merged.data.finance
-    hangarStateRef.current = merged.data.hangar
-    setFinanceState(merged.data.finance)
-    setHangarState(merged.data.hangar)
-    setCrewState(merged.data.crew)
-    setRoutePlans(merged.data.routes)
-    setMiningOpsState(merged.data.miningOps)
-    gameLogStateRef.current = merged.data.gameLog
-    setGameLogState(merged.data.gameLog)
-    setMarketHistory(merged.data.marketPriceHistory)
-    saveMarketPriceHistory(merged.data.marketPriceHistory)
-    setNewLocationKeys(new Set(merged.data.systemIndexSnapshot?.newLocationKeys ?? []))
-    setTheme(merged.data.preferences.theme)
-    setGameChannel(merged.data.preferences.gameChannel)
-    setWorkspaceMode(merged.data.preferences.workspaceMode)
-    setSetupOpen(false)
-    setGameScanRevision((revision) => revision + 1)
     dismissSyncProposal(syncMergeReview.proposal.id)
     setSyncError('')
-    setNotice('Approved sync merge applied on the primary device.')
+    setNotice('Client changes approved and merged on the host. Paired clients receive them on their next sync.')
   }
 
   const capturePriceSnapshot = useEffectEvent((rows: UexRow[]) => {
@@ -707,20 +791,20 @@ function App() {
     }
   }, [gameChannel, customGameRoots, gameScanStatus, gameScanRevision])
 
-  // Paired devices without their own Game.log follow the primary's listener for player location.
+  // Clients without their own Game.log follow the host's Game.log for player location.
   useEffect(() => {
     if (!syncClientPairing || gameLogStatus === 'watching') {
-      setPrimaryGameLogActive(false)
+      setHostGameLogActive(false)
       return
     }
     let active = true
     const poll = () => {
       fetchHostGameStatus(syncClientPairing).then((status) => {
         if (!active || !status) return
-        setPrimaryGameLogActive(status.gameLogActive)
-        if (status.locationCode && status.recordedAt) setPlayerLocation({ code: status.locationCode, recordedAt: status.recordedAt, source: 'primary' })
+        setHostGameLogActive(status.gameLogActive)
+        if (status.locationCode && status.recordedAt) setPlayerLocation({ code: status.locationCode, recordedAt: status.recordedAt, source: 'host' })
       }).catch(() => {
-        if (active) setPrimaryGameLogActive(false)
+        if (active) setHostGameLogActive(false)
       })
     }
     poll()
@@ -730,7 +814,7 @@ function App() {
       window.clearInterval(timer)
     }
   }, [syncClientPairing, gameLogStatus])
-  const routingMode = gameLogStatus === 'watching' || primaryGameLogActive
+  const routingMode = gameLogStatus === 'watching' || hostGameLogActive
   const activeShip = hangarState.ships.find((ship) => ship.id === hangarState.activeShipId)
   const activeShipUsed = activeShip ? getShipCargoUsed(hangarState, activeShip.id) : 0
   const activeShipFree = activeShip ? Math.max(0, activeShip.cargoCapacity - activeShipUsed) : 0
@@ -1381,6 +1465,7 @@ function App() {
       <div className="main-column">
         <header className="topbar">
           <div className="breadcrumb"><span>COMMAND HUB</span><span className="crumb-separator">/</span><strong>{sectionTitle(section).toUpperCase()}</strong></div>
+          <UpdateStatus currentVersion={packageMetadata.version} />
           <div className="top-actions">
             <div className={`connection-label ${allReady ? 'connected' : ''}`}><span className="status-dot" />{allReady ? 'CONNECTED' : anyLoading ? 'SYNCING' : anyReady ? 'PARTIAL' : 'OFFLINE'}</div>
             <button className="icon-button refresh-button" type="button" onClick={refreshData} aria-label="Refresh UEX data" title="Refresh UEX data">↻</button>
@@ -1432,7 +1517,7 @@ function App() {
               mergeReview={syncMergeReview}
               clientPairing={syncClientPairing}
               clientStatus={syncClientStatus}
-              lastUploadedAt={syncLastUploadedAt}
+              lastSyncedAt={syncLastSyncedAt}
               error={syncError}
               onStartHost={() => { void startSyncHost() }}
               onRotateCode={() => { void rotateSyncCode() }}
@@ -1444,9 +1529,9 @@ function App() {
               onDismissProposal={dismissSyncProposal}
               onApplyMerge={applySyncMerge}
               onCloseMergeReview={() => setSyncMergeReview(null)}
-              onConnectClient={(primaryUrl, code, clientName) => { void connectSyncClient(primaryUrl, code, clientName) }}
+              onConnectClient={(hostUrl, code, clientName) => { void connectSyncClient(hostUrl, code, clientName) }}
               onDisconnectClient={() => { void disconnectSync() }}
-              onUploadNow={() => { void uploadNow() }}
+              onSyncNow={syncNow}
             />}
           />}
           {section === 'trade' && <TradeView
@@ -2547,7 +2632,7 @@ function HoldingsView({ holdings, prices, state, search, activeShip, hangarState
       <div className="section-toolbar"><div><h2>Cargo holdings</h2><span>{filtered.length} commodities · every location they are held</span></div><span className="table-label">LOCAL INVENTORY</span></div>
       {state.status === 'error' && <div className="holdings-market-warning">UEX sell quotes are unavailable. Your recorded cargo is still shown.</div>}
       {!activeShip && <div className="holdings-market-warning">Select an active ship in Personal hangar to load cargo and sell from its hold. Unassigned holdings remain available.</div>}
-      {routingMode && <div className="holdings-routing-status"><span className={`status-dot ${playerLocation ? 'is-live' : 'is-loading'}`} /><span>{playerLocation ? `Player at ${formatLocationCode(playerLocation.code)} · ${playerLocation.source === 'primary' ? 'from primary Game.log' : 'from Game.log'} · ${formatDate(playerLocation.recordedAt)}` : 'Game.log routing active · waiting for your location (open a station inventory or terminal in game)'}</span><small>Sell unlocks when you are at a location that buys the cargo.</small></div>}
+      {routingMode && <div className="holdings-routing-status"><span className={`status-dot ${playerLocation ? 'is-live' : 'is-loading'}`} /><span>{playerLocation ? `Player at ${formatLocationCode(playerLocation.code)} · ${playerLocation.source === 'host' ? 'from host Game.log' : 'from Game.log'} · ${formatDate(playerLocation.recordedAt)}` : 'Game.log routing active · waiting for your location (open a station inventory or terminal in game)'}</span><small>Sell unlocks when you are at a location that buys the cargo.</small></div>}
       <div className="table-scroll"><table className="data-table holdings-table"><thead><tr><th>COMMODITY</th><th>TOTAL</th><th>ON ACTIVE SHIP</th><th>UNASSIGNED</th><th>AVG. BUY PRICE</th><th>BEST SELL QUOTE</th><th>SELL AT</th><th>CARGO</th><th></th></tr></thead><tbody>
         {filtered.map((holding) => {
           const quotes = prices.filter((row) => readText(row, 'commodity_name') === holding.commodity && readNumber(row, 'price_sell') > 0 && readNumber(row, 'scu_sell_stock') > 0).sort((left, right) => readNumber(right, 'price_sell') - readNumber(left, 'price_sell'))
