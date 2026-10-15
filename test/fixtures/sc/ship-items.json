@@ -1,0 +1,314 @@
+[
+  {
+    "className": "BEHR_LaserCannon_S1",
+    "reference": "42e2ddb1-7397-4299-88ee-2ddfaa0efc67",
+    "itemName": "behr_lasercannon_s1",
+    "type": "WeaponGun",
+    "subType": "Gun",
+    "size": 1,
+    "grade": 1,
+    "name": "M3A Cannon",
+    "classification": "Ship.Weapon.Gun",
+    "stdItem": {
+      "UUID": "42e2ddb1-7397-4299-88ee-2ddfaa0efc67",
+      "ClassName": "BEHR_LaserCannon_S1",
+      "Size": 1,
+      "Grade": 1,
+      "Mass": 144,
+      "Type": "WeaponGun.Gun",
+      "Name": "M3A Cannon",
+      "DescriptionData": {
+        "Manufacturer": "Behring",
+        "Item Type": "Laser Cannon",
+        "Size": "1"
+      },
+      "Manufacturer": {
+        "Code": "BEHR",
+        "Name": "Behring Applied Technology",
+        "UUID": "65a5d887-3b21-4046-a718-6912c0c7c3be"
+      },
+      "ResourceNetwork": {
+        "States": [
+          {
+            "Name": "Online",
+            "Deltas": [
+              {
+                "Type": "Consumption",
+                "Resource": "Power",
+                "Rate": 0.704,
+                "MinimumFraction": 0
+              }
+            ],
+            "Signature": {
+              "EM": 348
+            }
+          }
+        ],
+        "Usage": {
+          "Power": {
+            "Minimum": 0,
+            "Maximum": 0.704
+          },
+          "Coolant": {
+            "Minimum": 0,
+            "Maximum": 0.704
+          }
+        }
+      },
+      "Weapon": {
+        "Size": 1,
+        "WeaponType": "WeaponGun",
+        "Damage": {
+          "Sustained": 189.2,
+          "Burst": 303.8,
+          "AlphaTotal": 182.3,
+          "DpsTotal": 303.8
+        }
+      }
+    }
+  },
+  {
+    "className": "SHLD_GODI_S01_FR66_SCItem",
+    "reference": "0baaf20a-460e-4668-84f2-d09f9d31b492",
+    "itemName": "shld_godi_s01_fr66_scitem",
+    "type": "Shield",
+    "subType": "UNDEFINED",
+    "size": 1,
+    "grade": 1,
+    "name": "FR-66",
+    "classification": "Ship.Shield",
+    "stdItem": {
+      "UUID": "0baaf20a-460e-4668-84f2-d09f9d31b492",
+      "ClassName": "SHLD_GODI_S01_FR66_SCItem",
+      "Size": 1,
+      "Grade": 1,
+      "Mass": 120,
+      "Type": "Shield.UNDEFINED",
+      "Name": "FR-66",
+      "DescriptionData": {
+        "Item Type": "Shield Generator",
+        "Manufacturer": "Gorgon Defender Industries",
+        "Size": "1",
+        "Grade": "A",
+        "Class": "Military"
+      },
+      "Manufacturer": {
+        "Code": "GODI",
+        "Name": "Gorgon Defender Industries",
+        "UUID": "57bfcf3d-13f6-4c2c-b7c7-6bf8eacb8a24"
+      },
+      "ResourceNetwork": {
+        "States": [
+          {
+            "Name": "Online",
+            "Deltas": [
+              {
+                "Type": "Conversion",
+                "Resource": "Power",
+                "Rate": 3,
+                "GeneratedResource": "Shield",
+                "GeneratedRate": 697,
+                "MinimumFraction": 0.3333333,
+                "NoOverGeneration": 0
+              },
+              {
+                "Type": "Consumption",
+                "Resource": "Coolant",
+                "Rate": 0,
+                "MinimumFraction": 0
+              }
+            ],
+            "Signature": {
+              "EM": 1240
+            }
+          }
+        ],
+        "Usage": {
+          "Power": {
+            "Minimum": 1,
+            "Maximum": 3
+          },
+          "Coolant": {
+            "Minimum": 0.7,
+            "Maximum": 3
+          }
+        }
+      },
+      "Shield": {
+        "MaxShieldHealth": 3168,
+        "MaxShieldRegen": 697
+      }
+    }
+  },
+  {
+    "className": "POWR_S01_IASI_Name_SCItem",
+    "reference": "3493c2d7-9b7f-43ca-aebb-8019fbcc9ef4",
+    "itemName": "powr_s01_iasi_name_scitem",
+    "type": "PowerPlant",
+    "subType": "Power",
+    "size": 1,
+    "grade": 2,
+    "name": "Sovereign IP-10",
+    "classification": "Ship.PowerPlant.Power",
+    "stdItem": {
+      "UUID": "3493c2d7-9b7f-43ca-aebb-8019fbcc9ef4",
+      "ClassName": "POWR_S01_IASI_Name_SCItem",
+      "Size": 1,
+      "Grade": 2,
+      "Mass": 250,
+      "Type": "PowerPlant.Power",
+      "Name": "Sovereign IP-10",
+      "DescriptionData": {
+        "Item Type": "Power Plant",
+        "Manufacturer": "Roberts Space Industries",
+        "Size": "1",
+        "Grade": "B",
+        "Class": "Military"
+      },
+      "Manufacturer": {
+        "Code": "RSI",
+        "Name": "Roberts Space Industries",
+        "UUID": "093e6eba-93fa-4dad-b3dd-38966934e34e"
+      },
+      "ResourceNetwork": {
+        "States": [
+          {
+            "Name": "Online",
+            "Deltas": [
+              {
+                "Type": "Generation",
+                "Resource": "Power",
+                "Rate": 16,
+                "NoOverGeneration": 0,
+                "Composition": [
+                  {
+                    "ContainerResource": "bcc8cde9-de58-4e6b-8ee9-37d4aaa507eb",
+                    "Ratio": 1
+                  }
+                ]
+              },
+              {
+                "Type": "Consumption",
+                "Resource": "Coolant",
+                "Rate": 0,
+                "MinimumFraction": 0
+              }
+            ],
+            "Signature": {
+              "EM": 7920
+            }
+          }
+        ],
+        "Usage": {
+          "Power": {
+            "Minimum": 16,
+            "Maximum": 16
+          },
+          "Coolant": {
+            "Minimum": 16,
+            "Maximum": 16
+          }
+        },
+        "Generation": {
+          "Power": 16
+        }
+      }
+    }
+  },
+  {
+    "className": "COOL_AEGS_S01_Bracer_SCItem",
+    "reference": "4ec3037b-4b6f-4837-b00d-cd9b4836a82a",
+    "itemName": "cool_aegs_s01_bracer_scitem",
+    "type": "Cooler",
+    "subType": "UNDEFINED",
+    "size": 1,
+    "grade": 3,
+    "name": "Bracer",
+    "classification": "Ship.Cooler",
+    "stdItem": {
+      "UUID": "4ec3037b-4b6f-4837-b00d-cd9b4836a82a",
+      "ClassName": "COOL_AEGS_S01_Bracer_SCItem",
+      "Size": 1,
+      "Grade": 3,
+      "Mass": 210,
+      "Type": "Cooler.UNDEFINED",
+      "Name": "Bracer",
+      "DescriptionData": {
+        "Item Type": "Cooler",
+        "Manufacturer": "Aegis Dynamics",
+        "Size": "1",
+        "Grade": "C",
+        "Class": "Military"
+      },
+      "Manufacturer": {
+        "Code": "AEGS",
+        "Name": "Aegis Dynamics",
+        "UUID": "cf4a74bf-eb2c-462a-9b78-f7f2724c31d2"
+      },
+      "ResourceNetwork": {
+        "States": [
+          {
+            "Name": "Online",
+            "Deltas": [
+              {
+                "Type": "Conversion",
+                "Resource": "Power",
+                "Rate": 3,
+                "GeneratedResource": "Coolant",
+                "GeneratedRate": 34,
+                "MinimumFraction": 0.3333333,
+                "NoOverGeneration": 0
+              }
+            ],
+            "Signature": {
+              "EM": 1490,
+              "IR": 7260
+            }
+          }
+        ],
+        "Usage": {
+          "Power": {
+            "Minimum": 1,
+            "Maximum": 3
+          },
+          "Coolant": {
+            "Minimum": 0.7,
+            "Maximum": 3
+          }
+        },
+        "Generation": {
+          "Coolant": 34
+        }
+      }
+    }
+  },
+  {
+    "id": "test-cannon-s3",
+    "name": "Test Cannon S3",
+    "type": "WeaponGun",
+    "sub_type": "Gun",
+    "size": 3,
+    "grade": "C",
+    "class": "Civilian",
+    "stats": {
+      "burstDps": 800,
+      "sustainedDps": 500,
+      "powerDraw": 2.5,
+      "heatGeneration": 2.5
+    }
+  },
+  {
+    "id": "test-cannon-s4",
+    "name": "Test Cannon S4",
+    "type": "WeaponGun",
+    "sub_type": "Gun",
+    "size": 4,
+    "grade": "C",
+    "class": "Civilian",
+    "stats": {
+      "burstDps": 1100,
+      "powerDraw": 4,
+      "heatGeneration": 4
+    }
+  }
+]

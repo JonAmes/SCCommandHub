@@ -66,6 +66,39 @@ npm run mobile:ios
 
 Select an iOS simulator or configured device in Xcode to run the app. Installing on devices or distributing through the App Store requires Apple signing credentials and provisioning.
 
+## Item database & loadout API
+
+`server.js` runs an Express + SQLite (`better-sqlite3`) API for ships, components and loadout calculations, mounted at `/api/sc`:
+
+```sh
+SC_DATA_DIR=/path/to/scunpacked-data npm run server
+```
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `PORT` / `HOST` | `3001` / `127.0.0.1` | Listen address |
+| `SC_DB_PATH` | `data/sc.db` | SQLite database file |
+| `SC_DATA_DIR` | _(unset)_ | If set, ingest `ships.json` and `ship-items.json` (or `components.json` / `items.json`) from [scunpacked-data](https://github.com/StarCitizenWiki/scunpacked-data) on startup |
+
+Endpoints:
+
+- `GET /api/sc/ships` — list ships
+- `GET /api/sc/ships/:id` — ship with parsed `hardpoints`
+- `GET /api/sc/components?type=Shield&size=1` — components, optionally filtered
+- `POST /api/sc/loadouts/calculate` — body `{ "shipId": "...", "loadoutMap": { "<hardpoint name>": "<component id>" } }`; returns burst/sustained DPS, shield HP, power and cooling budgets, per-slot results, `warnings` and `errors`
+
+To mount the router in another Express app:
+
+```js
+import { initSCSchema } from './src/db/scSchema.js'
+import { createSCRouter } from './src/routes/scRoutes.js'
+
+initSCSchema(db)
+app.use('/api/sc', createSCRouter(db))
+```
+
+Run the API tests with `npm test`.
+
 ## Local data
 
 Accounts, trades, routes, crew, hangar, and mining records are stored on the device. They are not synchronized between installations or platforms.

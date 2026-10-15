@@ -1,0 +1,138 @@
+[
+  {
+    "UUID": "b6b59889-7226-458e-a6b0-1c9392128a3c",
+    "ClassName": "AEGS_Gladius",
+    "Name": "Aegis Gladius",
+    "Manufacturer": {
+      "UUID": "cf4a74bf-eb2c-462a-9b78-f7f2724c31d2",
+      "Code": "AEGS",
+      "Name": "Aegis Dynamics"
+    },
+    "Mass": 48552,
+    "Cargo": 0,
+    "Loadout": [
+      {
+        "HardpointName": "hardpoint_controller_shield",
+        "ClassName": "Controller_Shield_AEGS_Gladius",
+        "Type": "ShieldController.UNDEFINED",
+        "Editable": false,
+        "CompatibleTypes": [
+          {
+            "Type": "ShieldController"
+          }
+        ],
+        "MaxSize": 1,
+        "MinSize": 1,
+        "Path": [
+          "hardpoint_controller_shield"
+        ]
+      },
+      {
+        "HardpointName": "Hardpoint_cooler_left",
+        "ClassName": "COOL_AEGS_S01_Bracer_SCItem",
+        "Type": "Cooler.UNDEFINED",
+        "Editable": true,
+        "CompatibleTypes": [
+          {
+            "Type": "Cooler"
+          }
+        ],
+        "MaxSize": 1,
+        "MinSize": 1,
+        "Path": [
+          "Hardpoint_cooler_left"
+        ]
+      },
+      {
+        "HardpointName": "Hardpoint_cooler_right",
+        "ClassName": "COOL_AEGS_S01_Bracer_SCItem",
+        "Type": "Cooler.UNDEFINED",
+        "Editable": true,
+        "CompatibleTypes": [
+          {
+            "Type": "Cooler"
+          }
+        ],
+        "MaxSize": 1,
+        "MinSize": 1,
+        "Path": [
+          "Hardpoint_cooler_right"
+        ]
+      },
+      {
+        "HardpointName": "hardpoint_power_plant",
+        "ClassName": "POWR_AEGS_S01_Regulus_SCItem",
+        "Type": "PowerPlant.Power",
+        "Editable": true,
+        "CompatibleTypes": [
+          {
+            "Type": "PowerPlant"
+          }
+        ],
+        "MaxSize": 1,
+        "MinSize": 1,
+        "Path": [
+          "hardpoint_power_plant"
+        ]
+      },
+      {
+        "HardpointName": "hardpoint_shield_generator_right",
+        "ClassName": "SHLD_GODI_S01_AllStop_SCItem",
+        "Type": "Shield.UNDEFINED",
+        "Editable": true,
+        "CompatibleTypes": [
+          {
+            "Type": "Shield"
+          }
+        ],
+        "MaxSize": 1,
+        "MinSize": 1,
+        "Path": [
+          "hardpoint_shield_generator_right"
+        ]
+      },
+      {
+        "HardpointName": "hardpoint_shield_generator_left",
+        "ClassName": "SHLD_GODI_S01_AllStop_SCItem",
+        "Type": "Shield.UNDEFINED",
+        "Editable": true,
+        "CompatibleTypes": [
+          {
+            "Type": "Shield"
+          }
+        ],
+        "MaxSize": 1,
+        "MinSize": 1,
+        "Path": [
+          "hardpoint_shield_generator_left"
+        ]
+      },
+      {
+        "HardpointName": "hardpoint_gun_nose",
+        "ClassName": "Mount_Gimbal_S3",
+        "Type": "Turret.GunTurret",
+        "Editable": true,
+        "CompatibleTypes": [
+          {
+            "Type": "Turret",
+            "SubTypes": [
+              "Gun",
+              "GunTurret"
+            ]
+          },
+          {
+            "Type": "WeaponGun",
+            "SubTypes": [
+              "Gun"
+            ]
+          }
+        ],
+        "MaxSize": 3,
+        "MinSize": 3,
+        "Path": [
+          "hardpoint_gun_nose"
+        ]
+      }
+    ]
+  }
+]
