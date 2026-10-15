@@ -1,5 +1,7 @@
 # SC Command Hub
 
+A tool integrating data from Star Citizen APIs.
+
 SC Command Hub runs as a web app, Windows/Linux desktop app, or native iOS/Android app. All platforms use the same React interface and UEX API integration.
 
 ## Requirements
