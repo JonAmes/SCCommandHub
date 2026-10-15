@@ -69,3 +69,9 @@ Select an iOS simulator or configured device in Xcode to run the app. Installing
 ## Local data
 
 Accounts, trades, routes, crew, hangar, and mining records are stored on the device. They are not synchronized between installations or platforms.
+
+## Game.log integration
+
+The Windows/Linux desktop app can monitor the selected LIVE or PTU installation's `Game.log`. Successful UEC shop transactions appear as pending Finance activity and do not affect an account balance until an account is selected and the event is confirmed. Dismissing an event leaves the ledger unchanged.
+
+When a local ship-control record appears, a missing ship is added to the hangar using UEX specifications when available, or a zero-capacity placeholder when they are not. The sample log records this when local control is released, so ship detection can be delayed until leaving the ship. Game files are read-only. The web and mobile apps remain usable without a detected installation but cannot monitor local files.

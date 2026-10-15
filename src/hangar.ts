@@ -12,6 +12,7 @@ export type HangarShip = {
   cargoCapacity: number
   photoUrl: string
   addedAt: string
+  gameModelSlug?: string
 }
 
 export type HangarState = {
@@ -84,6 +85,46 @@ export function addShip(state: HangarState, vehicle: UexRow): { state?: HangarSt
     cargoCapacity: Math.max(0, readNumber(vehicle, 'scu')),
     photoUrl: readText(vehicle, 'url_photo'),
     addedAt: new Date().toISOString(),
+  }
+  return {
+    state: {
+      ...state,
+      ships: [...state.ships, ship],
+      activeShipId: state.activeShipId ?? ship.id,
+      cargoByShip: { ...state.cargoByShip, [ship.id]: {} },
+    },
+  }
+}
+
+export function addDetectedShip(state: HangarState, modelSlug: string, vehicle?: UexRow): { state?: HangarState; error?: string } {
+  const vehicleId = vehicle ? readText(vehicle, 'id') : ''
+  if (state.ships.some((ship) => ship.gameModelSlug === modelSlug || (vehicleId && ship.vehicleId === vehicleId))) {
+    return { error: 'This ship is already in your hangar.' }
+  }
+
+  if (vehicleId && vehicle && readText(vehicle, 'name')) {
+    const result = addShip(state, vehicle)
+    if (!result.state) return result
+    const added = result.state.ships[result.state.ships.length - 1]
+    return {
+      state: {
+        ...result.state,
+        ships: result.state.ships.map((ship) => ship.id === added.id ? { ...ship, gameModelSlug: modelSlug } : ship),
+      },
+    }
+  }
+
+  const [manufacturerCode, ...nameParts] = modelSlug.split('_')
+  const name = nameParts.join(' ') || modelSlug
+  const ship: HangarShip = {
+    id: createId(),
+    vehicleId: `game-log:${modelSlug}`,
+    name,
+    manufacturer: manufacturerCode,
+    cargoCapacity: 0,
+    photoUrl: '',
+    addedAt: new Date().toISOString(),
+    gameModelSlug: modelSlug,
   }
   return {
     state: {

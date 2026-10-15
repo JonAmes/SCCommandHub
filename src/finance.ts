@@ -4,9 +4,11 @@ import { CONTAINER_SIZES, isContainerSizedQuantity } from './containerSizes'
 const storageKey = 'sc-command-hub.finance-v1'
 
 export type TradeSide = 'buy' | 'sell'
+export type GameStoreTransactionKind = 'buy' | 'sell'
 export type AccountTransactionKind = 'deposit' | 'withdrawal' | 'transfer'
 export type AccountAdjustmentKind = Exclude<AccountTransactionKind, 'transfer'>
 export type VehiclePurchase = { accountId: string; vehicleId: string; vehicleName: string; terminal: string; price: number }
+export type GameStoreTransaction = { eventId: string; accountId: string; kind: GameStoreTransactionKind; itemName: string; itemClassGuid: string; shopName: string; quantity: number; unitPrice: number; total: number; recordedAt: string; channel: 'LIVE' | 'PTU' }
 
 export type BankAccount = {
   id: string
@@ -19,7 +21,7 @@ export type LedgerEntry = {
   id: string
   accountId: string
   accountName: string
-  side: TradeSide | AccountTransactionKind | 'vehicle_purchase'
+  side: TradeSide | AccountTransactionKind | 'vehicle_purchase' | 'game_purchase' | 'game_sale'
   commodity: string
   terminal: string
   quantity: number
@@ -33,6 +35,7 @@ export type LedgerEntry = {
   transferToAccountName?: string
   crewShareTotal?: number
   crewShares?: CrewSharePayout[]
+  sourceEventId?: string
 }
 
 export type CrewSharePayout = {
@@ -83,12 +86,13 @@ function isTransaction(value: unknown): value is LedgerEntry {
   const transaction = value as Partial<LedgerEntry>
   return typeof transaction.id === 'string'
     && typeof transaction.accountId === 'string'
-    && (transaction.side === 'buy' || transaction.side === 'sell' || transaction.side === 'deposit' || transaction.side === 'withdrawal' || transaction.side === 'transfer' || transaction.side === 'vehicle_purchase')
+    && (transaction.side === 'buy' || transaction.side === 'sell' || transaction.side === 'deposit' || transaction.side === 'withdrawal' || transaction.side === 'transfer' || transaction.side === 'vehicle_purchase' || transaction.side === 'game_purchase' || transaction.side === 'game_sale')
     && typeof transaction.commodity === 'string'
     && Number.isFinite(transaction.total)
     && (transaction.crewShareTotal === undefined || Number.isFinite(transaction.crewShareTotal))
     && (transaction.containerSize === undefined || CONTAINER_SIZES.some((size) => size === transaction.containerSize))
     && (transaction.containerCount === undefined || (Number.isInteger(transaction.containerCount) && transaction.containerCount > 0))
+    && (transaction.sourceEventId === undefined || typeof transaction.sourceEventId === 'string')
     && (transaction.crewShares === undefined || (Array.isArray(transaction.crewShares) && transaction.crewShares.every((share) => {
       if (!share || typeof share !== 'object') return false
       const payout = share as Partial<CrewSharePayout>
@@ -262,6 +266,42 @@ export function recordVehiclePurchase(state: FinanceState, purchase: VehiclePurc
   return {
     state: {
       accounts: state.accounts.map((item) => item.id === account.id ? { ...item, balance: Math.round((item.balance - total) * 100) / 100 } : item),
+      transactions: [entry, ...state.transactions],
+    },
+  }
+}
+
+export function recordGameStoreTransaction(state: FinanceState, transaction: GameStoreTransaction): { state?: FinanceState; error?: string } {
+  if (!transaction.eventId.trim() || !transaction.itemName.trim() || !transaction.shopName.trim()) return { error: 'This Game.log transaction is missing required details.' }
+  if (!Number.isInteger(transaction.quantity) || transaction.quantity <= 0) return { error: 'This Game.log transaction has an invalid quantity.' }
+  if (!Number.isFinite(transaction.total) || transaction.total <= 0 || !Number.isFinite(transaction.unitPrice) || transaction.unitPrice <= 0) return { error: 'This Game.log transaction has an invalid amount.' }
+  if (state.transactions.some((entry) => entry.sourceEventId === transaction.eventId)) return { error: 'This Game.log transaction has already been recorded.' }
+
+  const account = state.accounts.find((item) => item.id === transaction.accountId)
+  if (!account) return { error: 'Choose an account before confirming this Game.log transaction.' }
+  const total = Math.round(transaction.total * 100) / 100
+  const side = transaction.kind === 'buy' ? 'game_purchase' : 'game_sale'
+  const entry: LedgerEntry = {
+    id: createId(),
+    accountId: account.id,
+    accountName: account.name,
+    side,
+    commodity: transaction.itemName,
+    terminal: transaction.shopName,
+    quantity: transaction.quantity,
+    unitPrice: Math.round(transaction.unitPrice * 100) / 100,
+    total,
+    note: `Game.log ${transaction.channel} · ${transaction.itemClassGuid}`,
+    recordedAt: transaction.recordedAt,
+    sourceEventId: transaction.eventId,
+  }
+
+  return {
+    state: {
+      accounts: state.accounts.map((item) => item.id === account.id ? {
+        ...item,
+        balance: Math.round((item.balance + (transaction.kind === 'sell' ? total : -total)) * 100) / 100,
+      } : item),
       transactions: [entry, ...state.transactions],
     },
   }

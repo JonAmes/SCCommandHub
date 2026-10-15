@@ -380,6 +380,31 @@
 .dashboard-account-balance { color: #34442d; font: 9px var(--mono); text-align: right; white-space: nowrap; }
 .theme-settings-section { margin-top: 0; }
 .settings-reset-section { margin-top: 14px; }
+.game-install-section { margin-top: 14px; }
+.game-install-content { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); align-items: center; gap: 15px; padding: 15px; }
+.game-channel-switch { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+.game-channel-choice { min-width: 0; min-height: 60px; display: flex; flex-direction: column; justify-content: center; gap: 5px; padding: 10px 12px; border: 1px solid var(--line); background: var(--surface); color: var(--ink); text-align: left; cursor: pointer; }
+.game-channel-choice:hover { background: var(--canvas); }
+.game-channel-choice.selected { border-color: var(--focus); box-shadow: inset 3px 0 var(--lime); }
+.game-channel-choice > span { font-size: 11px; font-weight: 600; }
+.game-channel-choice > small { color: var(--muted); font: 8px var(--mono); }
+.game-install-summary { min-width: 0; display: grid; align-content: center; gap: 6px; }
+.game-install-summary > strong { color: var(--ink); font-size: 10px; }
+.game-install-path { overflow-wrap: anywhere; color: var(--muted); font: 9px/1.5 var(--mono); }
+.game-install-actions { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 3px; }
+.pending-game-section { margin-top: 14px; }
+.pending-game-list { display: grid; }
+.pending-game-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); align-items: center; gap: 12px; padding: 12px 15px; border-bottom: 1px solid var(--line); }
+.pending-game-item { min-width: 0; display: flex; align-items: center; gap: 10px; }
+.pending-game-item > div { min-width: 0; display: grid; gap: 4px; }
+.pending-game-item strong { overflow-wrap: anywhere; color: var(--ink); font-size: 10px; }
+.pending-game-item small, .pending-game-amount small { color: var(--muted); font-size: 8px; line-height: 1.4; }
+.pending-game-amount { display: grid; gap: 4px; }
+.pending-game-amount strong { font: 11px var(--mono); }
+.pending-game-account { min-width: 0; display: grid; gap: 5px; }
+.pending-game-account > span { color: var(--muted); font: 8px var(--mono); }
+.pending-game-account select { min-width: 0; width: 100%; height: 32px; border: 1px solid var(--line); background: var(--surface); padding: 0 8px; color: var(--ink); font-size: 10px; }
+.pending-game-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
 .settings-reset-row { display: flex; align-items: center; justify-content: space-between; gap: 20px; padding: 16px; }
 .settings-reset-row > div { min-width: 0; display: grid; gap: 5px; }
 .settings-reset-row strong { color: #39443b; font-size: 10px; }

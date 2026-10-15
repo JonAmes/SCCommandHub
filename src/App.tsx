@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useEffectEvent, useRef, useState } from 'react'
 import packageMetadata from '../package.json'
 import { Capacitor } from '@capacitor/core'
 import { Directory, Encoding, Filesystem } from '@capacitor/filesystem'
@@ -6,16 +6,19 @@ import { Share } from '@capacitor/share'
 import './App.css'
 import { clearUexCache, getUexData, readNumber, readText, type UexRow } from './uex'
 import { CONTAINER_SIZES, getContainerSelection, isContainerSizedQuantity } from './containerSizes'
-import { createBankAccount, getAccountHeldQuantity, getCommodityHoldings, getRealizedProfitLoss, loadFinanceState, previewCrewPayouts, recordAccountAdjustment, recordTrade, recordVehiclePurchase, saveFinanceState, transferFunds, type AccountTransactionKind, type BankAccount, type FinanceState, type LedgerEntry, type NewTrade, type TradeSide } from './finance'
-import { addShip, clearHangarCargo, getAssignedQuantity, getShipCargoQuantity, getShipCargoUsed, getUnassignedQuantity, loadCargo, loadHangarState, removeShip, saveHangarState, setActiveShip, unloadCargo, type HangarShip, type HangarState } from './hangar'
+import { createBankAccount, getAccountHeldQuantity, getCommodityHoldings, getRealizedProfitLoss, loadFinanceState, previewCrewPayouts, recordAccountAdjustment, recordGameStoreTransaction, recordTrade, recordVehiclePurchase, saveFinanceState, transferFunds, type AccountTransactionKind, type BankAccount, type FinanceState, type GameStoreTransaction, type LedgerEntry, type NewTrade, type TradeSide } from './finance'
+import { addDetectedShip, addShip, clearHangarCargo, getAssignedQuantity, getShipCargoQuantity, getShipCargoUsed, getUnassignedQuantity, loadCargo, loadHangarState, removeShip, saveHangarState, setActiveShip, unloadCargo, type HangarShip, type HangarState } from './hangar'
 import { addCrewMember, addCrewRole, assignCrewRole, getCrewSharePercent, loadCrewState, removeCrewMember, removeCrewRole, saveCrewState, updateCrewMemberPayoutAccount, updateCrewMemberShare, updateCrewRoleDefault, type CrewMember, type CrewRole, type CrewState } from './crew'
 import { clearRoutePlans, createPlannedRoute, loadRoutePlans, saveRoutePlans, type NewPlannedRoute, type PlannedRoute } from './routePlanner'
 import { addRockScan, loadMiningOpsState, removeRockScan, saveMiningOpsState, type MiningOpsState, type NewRockScan, type RockScan } from './miningOps'
+import { loadGameLogState, queueGameLogTransaction, removePendingGameTransaction, saveGameLogState, type GameLogState, type PendingGameTransaction } from './gameLog'
 
 const tokenKey = 'sc-command-hub.uex-token'
 const themeKey = 'sc-command-hub.theme-v1'
 const systemIndexKey = 'sc-command-hub.system-index-v1'
 const setupProfileKey = 'sc-command-hub.setup-profile-v1'
+const gameChannelKey = 'sc-command-hub.game-channel-v1'
+const gameRootsKey = 'sc-command-hub.game-roots-v1'
 
 type AppTheme = 'field' | 'amber' | 'ice' | 'night' | 'redshift'
 type WorkspaceMode = 'personal' | 'organization'
@@ -25,6 +28,49 @@ type DatasetState = { rows: UexRow[]; status: 'idle' | 'loading' | 'ready' | 'er
 type TradePreset = { side: TradeSide; commodity: string; terminal: string; unitPrice: number; quantity: number; accountId?: string; shipId?: string; note?: string; routePlanId?: string; routeAction?: 'buy' | 'sell' }
 type RouteMarketOffer = { terminalId: string; terminalName: string; location: string; buyPrice: number; buyQuantity: number; sellPrice: number; sellStock: number }
 type VehiclePurchaseSelection = { vehicle: UexRow; offers: UexRow[] }
+type GameChannel = 'LIVE' | 'PTU'
+type GameInstallation = { channel: GameChannel; path: string }
+type GameScanStatus = 'checking' | 'ready' | 'unavailable' | 'error'
+type GameLogStatus = 'idle' | 'watching' | 'waiting' | 'waiting-for-log' | 'installation-not-found' | 'invalid-channel' | 'error' | 'unavailable'
+type GameLogEvent = ({ type: 'transaction' } & PendingGameTransaction) | { type: 'ship'; id: string; channel: GameChannel; modelSlug: string; recordedAt: string }
+
+declare global {
+  interface Window {
+    starCitizenBridge?: {
+      detectInstallations?: (customRoots: string[]) => Promise<GameInstallation[]>
+      chooseInstallRoot?: () => Promise<string | null>
+      watchGameLog?: (channel: GameChannel, customRoots: string[]) => Promise<{ status: GameLogStatus }>
+      stopGameLog?: () => Promise<boolean>
+      onGameLogEvent?: (callback: (event: GameLogEvent) => void) => () => void
+      onGameLogStatus?: (callback: (status: GameLogStatus) => void) => () => void
+    }
+  }
+}
+
+function getStoredGameChannel(): GameChannel {
+  try {
+    return window.localStorage.getItem(gameChannelKey) === 'PTU' ? 'PTU' : 'LIVE'
+  } catch {
+    return 'LIVE'
+  }
+}
+
+function getStoredGameRoots() {
+  try {
+    const roots: unknown = JSON.parse(window.localStorage.getItem(gameRootsKey) || '[]')
+    return Array.isArray(roots) ? roots.filter((root): root is string => typeof root === 'string' && root.length < 1024) : []
+  } catch {
+    return []
+  }
+}
+
+function findVehicleForGameModel(modelSlug: string, vehicles: UexRow[]) {
+  const modelTokens = modelSlug.split('_').slice(1).map((part) => part.toLowerCase())
+  return vehicles
+    .map((vehicle) => ({ vehicle, tokens: (readText(vehicle, 'name', 'vehicle_name').toLowerCase().match(/[a-z0-9]+/g) ?? []) }))
+    .filter(({ tokens }) => tokens.length > 0 && tokens.every((token) => modelTokens.includes(token)))
+    .sort((left, right) => right.tokens.length - left.tokens.length)[0]?.vehicle
+}
 
 function csvCell(value: string | number | null | undefined) {
   const text = value === null || value === undefined ? '' : String(value)
@@ -34,16 +80,17 @@ function csvCell(value: string | number | null | undefined) {
 
 function createLedgerCsv(entries: LedgerEntry[], realizedProfitLoss: Map<string, number | null>) {
   const headers = [
-    'Recorded At (ISO)', 'Type', 'Commodity / Description', 'Location', 'Quantity (SCU)', 'Container Size (SCU)', 'Container Count',
+    'Recorded At (ISO)', 'Type', 'Commodity / Description', 'Location', 'Quantity (SCU or items)', 'Container Size (SCU)', 'Container Count',
     'Unit Price (aUEC)', 'Account', 'Destination Account', 'Gross (aUEC)', 'Crew Share (aUEC)', 'Crew Payouts',
     'Account Net (aUEC)', 'Realized P&L (aUEC)', 'Note', 'Entry ID',
   ]
   const rows = entries.map((entry) => {
     const isTrade = entry.side === 'buy' || entry.side === 'sell'
+    const isGameTransaction = entry.side === 'game_purchase' || entry.side === 'game_sale'
     const accountNet = entry.side === 'sell'
       ? entry.total - (entry.crewShareTotal ?? 0) + (entry.crewShares ?? []).filter((share) => share.accountId === entry.accountId).reduce((sum, share) => sum + share.amount, 0)
       : entry.total
-    const description = entry.side === 'transfer' ? 'Account transfer' : entry.side === 'deposit' ? 'Account deposit' : entry.side === 'withdrawal' ? 'Account withdrawal' : entry.side === 'vehicle_purchase' ? `Ship purchase · ${entry.commodity}` : entry.commodity
+    const description = entry.side === 'transfer' ? 'Account transfer' : entry.side === 'deposit' ? 'Account deposit' : entry.side === 'withdrawal' ? 'Account withdrawal' : entry.side === 'vehicle_purchase' ? `Ship purchase · ${entry.commodity}` : entry.side === 'game_purchase' ? `In-game purchase · ${entry.commodity}` : entry.side === 'game_sale' ? `In-game sale · ${entry.commodity}` : entry.commodity
     const payouts = (entry.crewShares ?? []).map((share) => `${share.memberName} (${share.sharePercent}%): ${share.amount} → ${share.accountName || 'Unassigned'}`).join('; ')
     const realized = entry.side === 'sell'
       ? realizedProfitLoss.get(entry.id) ?? 'Basis unavailable'
@@ -53,10 +100,10 @@ function createLedgerCsv(entries: LedgerEntry[], realizedProfitLoss: Map<string,
       entry.side === 'vehicle_purchase' ? 'SHIP' : entry.side.toUpperCase(),
       description,
       entry.terminal,
-      isTrade ? entry.quantity : '',
+      isTrade || isGameTransaction ? entry.quantity : '',
       isTrade ? entry.containerSize : '',
       isTrade ? entry.containerCount : '',
-      isTrade ? entry.unitPrice : '',
+      isTrade || isGameTransaction ? entry.unitPrice : '',
       entry.accountName,
       entry.transferToAccountName ?? '',
       entry.side === 'transfer' ? '' : entry.total,
@@ -279,6 +326,17 @@ function App() {
   const [selectedVehicleId, setSelectedVehicleId] = useState('')
   const [tradePreset, setTradePreset] = useState<TradePreset | null>(null)
   const [vehiclePurchase, setVehiclePurchase] = useState<VehiclePurchaseSelection | null>(null)
+  const [gameChannel, setGameChannel] = useState<GameChannel>(getStoredGameChannel)
+  const [customGameRoots, setCustomGameRoots] = useState<string[]>(getStoredGameRoots)
+  const [gameInstallations, setGameInstallations] = useState<GameInstallation[]>([])
+  const [gameScanStatus, setGameScanStatus] = useState<GameScanStatus>(() => window.starCitizenBridge?.detectInstallations ? 'checking' : 'unavailable')
+  const [gameScanRevision, setGameScanRevision] = useState(0)
+  const [gameLogStatus, setGameLogStatus] = useState<GameLogStatus>(() => window.starCitizenBridge ? 'idle' : 'unavailable')
+  const gameLogSupported = Boolean(window.starCitizenBridge?.watchGameLog && window.starCitizenBridge.onGameLogEvent)
+  const [gameLogState, setGameLogState] = useState<GameLogState>(loadGameLogState)
+  const gameLogStateRef = useRef(gameLogState)
+  const hangarStateRef = useRef(hangarState)
+  const financeStateRef = useRef(financeState)
 
   useEffect(() => {
     let active = true
@@ -309,6 +367,24 @@ function App() {
     document.documentElement.dataset.theme = theme
   }, [theme])
 
+  useEffect(() => {
+    const bridge = window.starCitizenBridge
+    if (!bridge?.detectInstallations) return
+    let active = true
+    bridge.detectInstallations(customGameRoots).then((installations) => {
+      if (!active) return
+      setGameInstallations(installations)
+      setGameScanStatus('ready')
+    }).catch(() => {
+      if (active) setGameScanStatus('error')
+    })
+    return () => { active = false }
+  }, [customGameRoots, gameScanRevision])
+
+  useEffect(() => { gameLogStateRef.current = gameLogState }, [gameLogState])
+  useEffect(() => { hangarStateRef.current = hangarState }, [hangarState])
+  useEffect(() => { financeStateRef.current = financeState }, [financeState])
+
   const prices = datasetsState.commodities_prices_all.rows
   const commodities = datasetsState.commodities.rows
   const terminals = datasetsState.terminals.rows
@@ -319,6 +395,55 @@ function App() {
   const refineryCapacities = datasetsState.refineries_capacities.rows
   const systems = datasetsState.star_systems.rows
   const hangarCandidates = vehicles.filter((vehicle) => readNumber(vehicle, 'is_spaceship') === 1 && readNumber(vehicle, 'is_addon') !== 1 && readNumber(vehicle, 'is_concept') !== 1)
+  const handleGameLogEvent = useEffectEvent((event: GameLogEvent) => {
+    if (event.type === 'transaction') {
+      const current = gameLogStateRef.current
+      const next = queueGameLogTransaction(current, event)
+      if (next === current) return
+      gameLogStateRef.current = next
+      setGameLogState(next)
+      const saved = saveGameLogState(next)
+      setNotice(`${event.itemName} ${event.kind === 'buy' ? 'purchase' : 'sale'} detected from Game.log. Confirm the account in Money & ledger.${saved ? '' : ' It is only saved for this session.'}`)
+      return
+    }
+
+    const current = hangarStateRef.current
+    const vehicle = findVehicleForGameModel(event.modelSlug, vehicles)
+    if (current.ships.some((ship) => ship.gameModelSlug === event.modelSlug || (vehicle && ship.vehicleId === readText(vehicle, 'id')))) return
+    const result = addDetectedShip(current, event.modelSlug, vehicle)
+    if (!result.state) return
+    hangarStateRef.current = result.state
+    setHangarState(result.state)
+    const saved = saveHangarState(result.state)
+    const name = result.state.ships.find((ship) => ship.gameModelSlug === event.modelSlug)?.name ?? event.modelSlug
+    setNotice(`${name} observed in Game.log and added to your hangar.${saved ? '' : ' It is only saved for this session.'}`)
+  })
+
+  useEffect(() => {
+    const bridge = window.starCitizenBridge
+    if (!bridge?.onGameLogEvent) return
+    const removeEventListener = bridge.onGameLogEvent(handleGameLogEvent)
+    const removeStatusListener = bridge.onGameLogStatus?.(setGameLogStatus)
+    return () => {
+      removeEventListener()
+      removeStatusListener?.()
+    }
+  }, [])
+
+  useEffect(() => {
+    const bridge = window.starCitizenBridge
+    if (!bridge?.watchGameLog || !bridge.onGameLogEvent || gameScanStatus !== 'ready') return
+    let active = true
+    bridge.watchGameLog(gameChannel, customGameRoots).then((result) => {
+      if (active) setGameLogStatus(result.status)
+    }).catch(() => {
+      if (active) setGameLogStatus('error')
+    })
+    return () => {
+      active = false
+      void bridge.stopGameLog?.()
+    }
+  }, [gameChannel, customGameRoots, gameScanStatus, gameScanRevision])
   const activeShip = hangarState.ships.find((ship) => ship.id === hangarState.activeShipId)
   const activeShipUsed = activeShip ? getShipCargoUsed(hangarState, activeShip.id) : 0
   const activeShipFree = activeShip ? Math.max(0, activeShip.cargoCapacity - activeShipUsed) : 0
@@ -376,6 +501,31 @@ function App() {
       window.localStorage.setItem(themeKey, nextTheme)
     } catch {
       setNotice('Theme changed for this session, but browser storage is unavailable.')
+    }
+  }
+
+  function updateGameChannel(channel: GameChannel) {
+    setGameChannel(channel)
+    try { window.localStorage.setItem(gameChannelKey, channel) } catch {}
+  }
+
+  function rescanGameInstallations() {
+    setGameScanStatus('checking')
+    setGameScanRevision((revision) => revision + 1)
+  }
+
+  async function chooseGameInstallRoot() {
+    const bridge = window.starCitizenBridge
+    if (!bridge?.chooseInstallRoot) return
+    try {
+      const root = await bridge.chooseInstallRoot()
+      if (!root) return
+      const nextRoots = [...new Set([...customGameRoots, root])]
+      setGameScanStatus('checking')
+      setCustomGameRoots(nextRoots)
+      try { window.localStorage.setItem(gameRootsKey, JSON.stringify(nextRoots)) } catch {}
+    } catch {
+      setGameScanStatus('error')
     }
   }
 
@@ -469,6 +619,47 @@ function App() {
     return ''
   }
 
+  function confirmGameLogTransaction(eventId: string, accountId: string) {
+    const pending = gameLogStateRef.current.pendingTransactions.find((transaction) => transaction.id === eventId)
+    if (!pending) return false
+    const gameTransaction: GameStoreTransaction = {
+      eventId: pending.id,
+      accountId,
+      kind: pending.kind,
+      itemName: pending.itemName,
+      itemClassGuid: pending.itemClassGuid,
+      shopName: pending.shopName,
+      quantity: pending.quantity,
+      unitPrice: pending.unitPrice,
+      total: pending.total,
+      recordedAt: pending.recordedAt,
+      channel: pending.channel,
+    }
+    const result = recordGameStoreTransaction(financeStateRef.current, gameTransaction)
+    if (!result.state) {
+      setNotice(result.error || 'Unable to confirm this Game.log transaction.')
+      return false
+    }
+
+    financeStateRef.current = result.state
+    setFinanceState(result.state)
+    const nextGameLogState = removePendingGameTransaction(gameLogStateRef.current, eventId)
+    gameLogStateRef.current = nextGameLogState
+    setGameLogState(nextGameLogState)
+    const financeSaved = saveFinanceState(result.state)
+    const gameLogSaved = saveGameLogState(nextGameLogState)
+    const accountName = result.state.accounts.find((account) => account.id === accountId)?.name ?? 'account'
+    setNotice(`${pending.itemName} ${pending.kind === 'buy' ? 'purchase' : 'sale'} recorded to ${accountName}.${financeSaved && gameLogSaved ? '' : ' Some changes are only saved for this session.'}`)
+    return true
+  }
+
+  function dismissGameLogTransaction(eventId: string) {
+    const nextGameLogState = removePendingGameTransaction(gameLogStateRef.current, eventId)
+    gameLogStateRef.current = nextGameLogState
+    setGameLogState(nextGameLogState)
+    saveGameLogState(nextGameLogState)
+  }
+
   function confirmRouteBuy(plan: PlannedRoute) {
     const quote = prices.find((row) => readText(row, 'commodity_name') === plan.commodity
       && readText(row, 'id_terminal') === plan.buyTerminalId
@@ -526,21 +717,27 @@ function App() {
     const nextFinance: FinanceState = { accounts: [], transactions: [] }
     const nextHangar: HangarState = { ships: [], activeShipId: null, cargoByShip: {} }
     const nextCrew: CrewState = { members: [], roles: [] }
+    const nextGameLogState: GameLogState = { ...gameLogStateRef.current, pendingTransactions: [] }
     const saved = [
       saveFinanceState(nextFinance),
       saveHangarState(nextHangar),
       saveCrewState(nextCrew),
       clearRoutePlans(),
+      saveGameLogState(nextGameLogState),
     ].every(Boolean)
+    financeStateRef.current = nextFinance
+    hangarStateRef.current = nextHangar
+    gameLogStateRef.current = nextGameLogState
     setFinanceState(nextFinance)
     setHangarState(nextHangar)
     setCrewState(nextCrew)
+    setGameLogState(nextGameLogState)
     setRoutePlans([])
     setFinanceTab('ledger')
     setSelectedVehicleId('')
     setTradePreset(null)
     setNotice(saved
-      ? 'Factory reset complete. Hangar, crew, accounts, ledger, and route plans were cleared.'
+      ? 'Factory reset complete. Hangar, crew, accounts, ledger, pending Game.log activity, and route plans were cleared.'
       : 'Factory reset applied for this session, but browser storage could not be updated.')
     return saved
   }
@@ -785,7 +982,19 @@ function App() {
           </div>}
 
           {section === 'dashboard' && <DashboardView financeState={financeState} hangarState={hangarState} activeShip={activeShip} crewState={crewState} routePlans={routePlans} prices={prices} priceState={datasetsState.commodities_prices_all} onNavigate={setSection} />}
-          {section === 'settings' && <ThemeSettingsView theme={theme} onChange={updateTheme} onFactoryReset={factoryReset} />}
+          {section === 'settings' && <ThemeSettingsView
+            theme={theme}
+            onChange={updateTheme}
+            onFactoryReset={factoryReset}
+            gameChannel={gameChannel}
+            gameInstallations={gameInstallations}
+            gameScanStatus={gameScanStatus}
+            gameLogStatus={gameLogStatus}
+            gameLogSupported={gameLogSupported}
+            onGameChannelChange={updateGameChannel}
+            onRescanGameInstallations={rescanGameInstallations}
+            onChooseGameRoot={chooseGameInstallRoot}
+          />}
           {section === 'trade' && <TradeView
             prices={prices}
             priceState={datasetsState.commodities_prices_all}
@@ -801,6 +1010,7 @@ function App() {
           {section === 'routePlanner' && <RoutePlannerView plans={routePlans} prices={prices} priceState={datasetsState.commodities_prices_all} terminals={terminals} search={search} onAdd={addRoutePlan} onRemove={removeRoutePlan} onConfirmBuy={confirmRouteBuy} onConfirmSale={confirmRouteSale} onViewLedger={openLedgerEntry} />}
           {section === 'finance' && <FinanceView
             state={financeState}
+            pendingGameTransactions={gameLogState.pendingTransactions}
             search={search}
             initialTab={financeTab}
             onAddAccount={addAccount}
@@ -809,6 +1019,8 @@ function App() {
             onMakeTransaction={makeAccountTransaction}
             onClearLedger={clearLedger}
             onNotice={setNotice}
+            onConfirmGameTransaction={confirmGameLogTransaction}
+            onDismissGameTransaction={dismissGameLogTransaction}
           />}
           {section === 'holdings' && <HoldingsView holdings={getCommodityHoldings(financeState)} prices={prices} state={datasetsState.commodities_prices_all} search={search} activeShip={activeShip} hangarState={hangarState} financeState={financeState} activeShipFree={activeShipFree} onAllocate={changeCargoAllocation} onSell={(commodity, quantity) => openTradeRecord('sell', undefined, commodity, quantity)} />}
           {section === 'hangar' && <HangarView hangarState={hangarState} candidates={hangarCandidates} vehicles={vehicles} purchaseRows={datasetsState.vehicles_purchases_prices_all.rows} terminals={terminals} selectedVehicleId={selectedVehicleId} setSelectedVehicleId={setSelectedVehicleId} onAdd={addHangarShip} onSetActive={updateActiveShip} onRemove={removeHangarShip} />}
@@ -980,16 +1192,16 @@ function DashboardView({ financeState, hangarState, activeShip, crewState, route
         <div className="dashboard-activity-list">
           {recentEntries.map((entry) => {
             const routedToSource = (entry.crewShares ?? []).filter((share) => share.accountId === entry.accountId).reduce((sum, share) => sum + share.amount, 0)
-            const accountChange = entry.side === 'buy'
+            const accountChange = entry.side === 'buy' || entry.side === 'game_purchase'
               ? -entry.total
               : entry.side === 'sell'
                 ? entry.total - (entry.crewShareTotal ?? 0) + routedToSource
                 : entry.side === 'withdrawal' || entry.side === 'transfer' || entry.side === 'vehicle_purchase'
                   ? -entry.total
                   : entry.total
-            const activityTitle = entry.side === 'transfer' ? 'Account transfer' : entry.side === 'deposit' ? 'Account deposit' : entry.side === 'withdrawal' ? 'Account withdrawal' : entry.side === 'vehicle_purchase' ? `Ship purchase · ${entry.commodity}` : entry.commodity
+            const activityTitle = entry.side === 'transfer' ? 'Account transfer' : entry.side === 'deposit' ? 'Account deposit' : entry.side === 'withdrawal' ? 'Account withdrawal' : entry.side === 'vehicle_purchase' ? `Ship purchase · ${entry.commodity}` : entry.side === 'game_purchase' ? `In-game purchase · ${entry.commodity}` : entry.side === 'game_sale' ? `In-game sale · ${entry.commodity}` : entry.commodity
             return <div className="dashboard-activity-row" key={entry.id}>
-              <span className={`trade-type ${entry.side}`}>{entry.side === 'transfer' ? 'MOVE' : entry.side === 'vehicle_purchase' ? 'SHIP' : entry.side.toUpperCase()}</span>
+              <span className={`trade-type ${entry.side === 'game_purchase' ? 'buy' : entry.side === 'game_sale' ? 'sell' : entry.side}`}>{entry.side === 'transfer' ? 'MOVE' : entry.side === 'vehicle_purchase' ? 'SHIP' : entry.side === 'game_purchase' ? 'GAME BUY' : entry.side === 'game_sale' ? 'GAME SALE' : entry.side.toUpperCase()}</span>
               <div className="dashboard-activity-copy"><strong>{activityTitle}</strong><small>{entry.accountName} · {formatDate(entry.recordedAt)}</small></div>
               <strong className={accountChange < 0 ? 'ledger-debit' : entry.side === 'transfer' ? 'ledger-transfer' : 'ledger-credit'}>{entry.side === 'transfer' ? '↔ ' : accountChange < 0 ? '−' : '+'}{formatCredits(Math.abs(accountChange))}</strong>
             </div>
@@ -1019,7 +1231,19 @@ function NavButton({ active, onClick, icon, label, count }: { active: boolean; o
   return <button className={`nav-button ${active ? 'active' : ''}`} onClick={onClick} type="button"><span className="nav-icon" aria-hidden="true">{icon}</span><span>{label}</span>{count !== undefined && <span className="nav-count">{count.toLocaleString()}</span>}</button>
 }
 
-function ThemeSettingsView({ theme, onChange, onFactoryReset }: { theme: AppTheme; onChange: (theme: AppTheme) => void; onFactoryReset: () => boolean }) {
+function ThemeSettingsView({ theme, onChange, onFactoryReset, gameChannel, gameInstallations, gameScanStatus, gameLogStatus, gameLogSupported, onGameChannelChange, onRescanGameInstallations, onChooseGameRoot }: {
+  theme: AppTheme
+  onChange: (theme: AppTheme) => void
+  onFactoryReset: () => boolean
+  gameChannel: GameChannel
+  gameInstallations: GameInstallation[]
+  gameScanStatus: GameScanStatus
+  gameLogStatus: GameLogStatus
+  gameLogSupported: boolean
+  onGameChannelChange: (channel: GameChannel) => void
+  onRescanGameInstallations: () => void
+  onChooseGameRoot: () => void
+}) {
   const [resetOpen, setResetOpen] = useState(false)
   const [appearanceExpanded, setAppearanceExpanded] = useState(true)
   const [shutdownOpen, setShutdownOpen] = useState(false)
@@ -1030,6 +1254,19 @@ function ThemeSettingsView({ theme, onChange, onFactoryReset }: { theme: AppThem
     { id: 'night', name: 'Night Ops', description: 'Deep teal surfaces with luminous cyan accents.', swatches: ['#080e11', '#61d4cf', '#152023'] },
     { id: 'redshift', name: 'Redshift', description: 'Near-black surfaces with warm coral signal accents.', swatches: ['#0d080b', '#ff8b77', '#211819'] },
   ]
+
+  const selectedGameInstallation = gameInstallations.find((installation) => installation.channel === gameChannel)
+  const gameScanLabel = gameScanStatus === 'checking' ? 'SCANNING' : gameScanStatus === 'unavailable' ? 'DESKTOP ONLY' : gameScanStatus === 'error' ? 'SCAN ERROR' : `${gameInstallations.length} FOUND`
+  const gameLogMessage = gameScanStatus === 'unavailable'
+    ? 'This standalone browser/mobile build works without Star Citizen.'
+    : gameScanStatus === 'checking' ? 'Searching common install locations…'
+      : gameScanStatus === 'error' ? 'Scan failed. Choose a folder or try scanning again.'
+        : !selectedGameInstallation ? 'No installation detected. The app remains usable standalone.'
+          : !gameLogSupported ? 'This app shell can detect installs, but live Game.log monitoring requires the desktop build.'
+          : gameLogStatus === 'watching' ? 'Monitoring Game.log for shop transactions and flown ships.'
+            : gameLogStatus === 'waiting' || gameLogStatus === 'waiting-for-log' ? 'Waiting for Game.log in this channel.'
+              : gameLogStatus === 'error' ? 'Unable to read Game.log. Check that the install folder is accessible.'
+                : 'Starting Game.log monitoring…'
 
   return <>
     <section className="data-section theme-settings-section">
@@ -1045,9 +1282,32 @@ function ThemeSettingsView({ theme, onChange, onFactoryReset }: { theme: AppThem
         <div className="table-note"><span>Your selection is saved in this browser.</span><span>Theme applies immediately.</span></div>
       </div>
     </section>
+    <section className="data-section game-install-section">
+      <div className="section-toolbar"><div><h2>Star Citizen</h2><span>Detect local installs and select an environment.</span></div><span className="table-label">{gameScanLabel}</span></div>
+      <div className="game-install-content">
+        <div className="game-channel-switch" role="radiogroup" aria-label="Star Citizen environment">
+          {(['LIVE', 'PTU'] as const).map((channel) => {
+            const installed = gameInstallations.some((installation) => installation.channel === channel)
+            return <button className={`game-channel-choice ${gameChannel === channel ? 'selected' : ''}`} type="button" role="radio" aria-checked={gameChannel === channel} key={channel} onClick={() => onGameChannelChange(channel)}>
+              <span>{channel}</span><small>{installed ? 'INSTALLED' : 'NOT DETECTED'}</small>
+            </button>
+          })}
+        </div>
+        <div className="game-install-summary">
+          <strong>{selectedGameInstallation ? `${gameChannel} installation detected` : gameScanStatus === 'ready' ? `${gameChannel} installation not found` : 'Installation status'}</strong>
+          <span className="game-install-path">{selectedGameInstallation?.path ?? gameLogMessage}</span>
+          {selectedGameInstallation && <span className="game-install-path">{gameLogMessage}</span>}
+          {gameScanStatus !== 'unavailable' && <div className="game-install-actions">
+            <button className="secondary-button" type="button" disabled={gameScanStatus === 'checking'} onClick={onRescanGameInstallations}>Scan again</button>
+            <button className="secondary-button" type="button" onClick={onChooseGameRoot}>Choose folder</button>
+          </div>}
+        </div>
+      </div>
+      <div className="table-note"><span>Channel selection is saved on this device.</span><span>Ship detection may appear after you leave the ship.</span></div>
+    </section>
     <section className="data-section settings-reset-section">
       <div className="section-toolbar"><div><h2>Factory reset</h2><span>Permanently clear personal operating data from this browser.</span></div><span className="table-label">DESTRUCTIVE ACTION</span></div>
-      <div className="settings-reset-row"><div><strong>Reset local data</strong><span>Deletes ships and cargo, crew and roles, bank accounts, ledger history, and saved route plans. Your UEX token and theme are kept.</span></div><button className="danger-button" type="button" onClick={() => setResetOpen(true)}>Factory reset</button></div>
+      <div className="settings-reset-row"><div><strong>Reset local data</strong><span>Deletes ships and cargo, crew and roles, bank accounts, ledger history, pending Game.log activity, and saved route plans. Your UEX token and theme are kept.</span></div><button className="danger-button" type="button" onClick={() => setResetOpen(true)}>Factory reset</button></div>
     </section>
     {import.meta.env.DEV && <section className="data-section settings-reset-section">
       <div className="section-toolbar"><div><h2>Development server</h2><span>Stopping it disconnects this app until the server is restarted.</span></div><button className="danger-button" type="button" onClick={() => setShutdownOpen(true)}>Shutdown server</button></div>
@@ -1072,7 +1332,7 @@ function FactoryResetDialog({ onClose, onConfirm }: { onClose: () => void; onCon
   return <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose() }}>
     <section className="record-modal clear-ledger-modal factory-reset-modal" role="alertdialog" aria-modal="true" aria-labelledby="factory-reset-title">
       <div className="record-modal-head"><div><span className="eyebrow">PERMANENT ACTION</span><h2 id="factory-reset-title">Reset all personal data?</h2></div><button className="close-button" type="button" onClick={onClose} aria-label="Close confirmation">×</button></div>
-      <div className="clear-ledger-content factory-reset-copy"><p>This deletes all ships, cargo allocations, crew members and roles, bank accounts, ledger entries, and saved route plans. This cannot be undone.</p><p>Your UEX API token, theme, and UEX data are not affected.</p></div>
+      <div className="clear-ledger-content factory-reset-copy"><p>This deletes all ships, cargo allocations, crew members and roles, bank accounts, ledger entries, pending Game.log activity, and saved route plans. This cannot be undone.</p><p>Your UEX API token, theme, and UEX data are not affected.</p></div>
       <label className="factory-reset-confirmation"><span>Type RESET to confirm</span><input value={confirmation} onChange={(event) => setConfirmation(event.target.value)} autoComplete="off" /></label>
       <div className="record-actions"><button className="secondary-button" type="button" onClick={onClose}>Cancel</button><button className="danger-button confirm-clear-button" type="button" disabled={confirmation !== 'RESET'} onClick={onConfirm}>Reset everything</button></div>
     </section>
@@ -1233,8 +1493,9 @@ function RoutePlannerView({ plans, prices, priceState, terminals, search, onAdd,
   </>
 }
 
-function FinanceView({ state, search, initialTab, onAddAccount, onRemoveAccount, onRecordTrade, onMakeTransaction, onClearLedger, onNotice }: {
+function FinanceView({ state, pendingGameTransactions, search, initialTab, onAddAccount, onRemoveAccount, onRecordTrade, onMakeTransaction, onClearLedger, onNotice, onConfirmGameTransaction, onDismissGameTransaction }: {
   state: FinanceState
+  pendingGameTransactions: PendingGameTransaction[]
   search: string
   initialTab: 'ledger' | 'accounts'
   onAddAccount: (name: string, balance: number) => void
@@ -1243,6 +1504,8 @@ function FinanceView({ state, search, initialTab, onAddAccount, onRemoveAccount,
   onMakeTransaction: (kind: AccountTransactionKind, accountId: string, destinationId: string, amount: number, note: string) => string
   onClearLedger: () => boolean
   onNotice: (message: string) => void
+  onConfirmGameTransaction: (eventId: string, accountId: string) => boolean
+  onDismissGameTransaction: (eventId: string) => void
 }) {
   const [tab, setTab] = useState<'ledger' | 'accounts'>(initialTab)
   const [addingAccount, setAddingAccount] = useState(false)
@@ -1251,6 +1514,7 @@ function FinanceView({ state, search, initialTab, onAddAccount, onRemoveAccount,
   const [confirmRemove, setConfirmRemove] = useState('')
   const [transactionOpen, setTransactionOpen] = useState(false)
   const [clearLedgerOpen, setClearLedgerOpen] = useState(false)
+  const [pendingAccountIds, setPendingAccountIds] = useState<Record<string, string>>({})
   const totalBalance = state.accounts.reduce((sum, account) => sum + account.balance, 0)
   const totalVolume = state.transactions.reduce((sum, entry) => sum + (entry.side === 'buy' || entry.side === 'sell' ? entry.total : 0), 0)
   const realizedProfitLoss = getRealizedProfitLoss(state)
@@ -1304,25 +1568,47 @@ function FinanceView({ state, search, initialTab, onAddAccount, onRemoveAccount,
       <button type="button" role="tab" aria-selected={tab === 'ledger'} className={tab === 'ledger' ? 'selected' : ''} onClick={() => setTab('ledger')}>Ledger <span>{state.transactions.length}</span></button>
       <button type="button" role="tab" aria-selected={tab === 'accounts'} className={tab === 'accounts' ? 'selected' : ''} onClick={() => setTab('accounts')}>Bank accounts <span>{state.accounts.length}</span></button>
     </div>
+    {tab === 'ledger' && pendingGameTransactions.length > 0 && <section className="data-section pending-game-section">
+      <div className="section-toolbar"><div><h2>Pending Game.log activity</h2><span>{pendingGameTransactions.length} successful in-game {pendingGameTransactions.length === 1 ? 'transaction' : 'transactions'} awaiting account assignment</span></div><span className="table-label">NOT POSTED</span></div>
+      <div className="pending-game-list">{pendingGameTransactions.map((pending) => {
+        const selectedAccountId = pendingAccountIds[pending.id] ?? ''
+        const itemDescription = pending.itemName.replace(/_/g, ' ')
+        const shopDescription = pending.shopName.replace(/^SCShop_/, '').replace(/_/g, ' ')
+        return <div className="pending-game-row" key={pending.id}>
+          <div className="pending-game-item"><span className={`trade-type ${pending.kind}`}>{pending.kind === 'buy' ? 'BUY' : 'SELL'}</span><div><strong>{itemDescription}</strong><small>{shopDescription} · {pending.channel} · {formatDate(pending.recordedAt)}</small></div></div>
+          <div className="pending-game-amount"><strong className={pending.kind === 'buy' ? 'ledger-debit' : 'ledger-credit'}>{pending.kind === 'buy' ? '−' : '+'}{formatCredits(pending.total)}</strong><small>{pending.quantity} × {formatCredits(pending.unitPrice)} aUEC</small></div>
+          <label className="pending-game-account"><span>ACCOUNT</span><select value={selectedAccountId} onChange={(event) => setPendingAccountIds((previous) => ({ ...previous, [pending.id]: event.target.value }))} aria-label={`Account for ${itemDescription}`}>
+            <option value="">Choose account</option>
+            {state.accounts.map((account) => <option value={account.id} key={account.id}>{account.name}</option>)}
+          </select></label>
+          <div className="pending-game-actions"><button className="primary-button" type="button" disabled={!selectedAccountId} onClick={() => {
+            if (onConfirmGameTransaction(pending.id, selectedAccountId)) setPendingAccountIds((previous) => { const next = { ...previous }; delete next[pending.id]; return next })
+          }}>Confirm</button><button className="text-button" type="button" onClick={() => { onDismissGameTransaction(pending.id); setPendingAccountIds((previous) => { const next = { ...previous }; delete next[pending.id]; return next }) }}>Dismiss</button></div>
+        </div>
+      })}</div>
+      <div className="table-note"><span>Detected values come from successful Game.log shop responses.</span><span>Balances update only after confirmation.</span></div>
+    </section>}
     {tab === 'ledger' && <section className="data-section finance-ledger">
       <div className="section-toolbar"><div><h2>Transaction ledger</h2><span>Sale shares are routed to each member’s payout account.</span></div><div className="ledger-toolbar-actions"><span className="table-label">LOCAL RECORDS</span><button className="secondary-button" type="button" disabled={!entries.length} onClick={() => { void exportLedger() }}>Export CSV</button><button className="danger-button" type="button" disabled={!state.transactions.length} onClick={() => setClearLedgerOpen(true)}>⌫ Clear ledger</button></div></div>
       <div className="table-scroll"><table className="data-table ledger-table"><thead><tr><th>DATE / TIME</th><th>TYPE</th><th>COMMODITY</th><th>LOCATION</th><th>QUANTITY</th><th>UNIT PRICE</th><th>ACCOUNT</th><th>GROSS</th><th>CREW SHARE</th><th>ACCOUNT NET</th><th>REALIZED P&amp;L</th></tr></thead><tbody>
         {entries.map((entry) => {
           const isTrade = entry.side === 'buy' || entry.side === 'sell'
+          const isGameTransaction = entry.side === 'game_purchase' || entry.side === 'game_sale'
           const accountNet = entry.side === 'sell'
             ? entry.total - (entry.crewShareTotal ?? 0) + (entry.crewShares ?? []).filter((share) => share.accountId === entry.accountId).reduce((sum, share) => sum + share.amount, 0)
             : entry.total
-          const netClass = entry.side === 'buy' || entry.side === 'withdrawal' || entry.side === 'vehicle_purchase' ? 'ledger-debit' : entry.side === 'sell' || entry.side === 'deposit' ? 'ledger-credit' : 'ledger-transfer'
-          const netPrefix = entry.side === 'transfer' ? '↔ ' : entry.side === 'buy' || entry.side === 'withdrawal' || entry.side === 'vehicle_purchase' ? '−' : '+'
-          const entryName = entry.side === 'transfer' ? 'Account transfer' : entry.side === 'deposit' ? 'Account deposit' : entry.side === 'withdrawal' ? 'Account withdrawal' : entry.side === 'vehicle_purchase' ? `Ship purchase · ${entry.commodity}` : entry.commodity
+          const netClass = entry.side === 'buy' || entry.side === 'withdrawal' || entry.side === 'vehicle_purchase' || entry.side === 'game_purchase' ? 'ledger-debit' : entry.side === 'sell' || entry.side === 'deposit' || entry.side === 'game_sale' ? 'ledger-credit' : 'ledger-transfer'
+          const netPrefix = entry.side === 'transfer' ? '↔ ' : entry.side === 'buy' || entry.side === 'withdrawal' || entry.side === 'vehicle_purchase' || entry.side === 'game_purchase' ? '−' : '+'
+          const entryName = entry.side === 'transfer' ? 'Account transfer' : entry.side === 'deposit' ? 'Account deposit' : entry.side === 'withdrawal' ? 'Account withdrawal' : entry.side === 'vehicle_purchase' ? `Ship purchase · ${entry.commodity}` : entry.side === 'game_purchase' ? `In-game purchase · ${entry.commodity}` : entry.side === 'game_sale' ? `In-game sale · ${entry.commodity}` : entry.commodity
+          const typeLabel = entry.side === 'vehicle_purchase' ? 'SHIP' : entry.side === 'game_purchase' ? 'GAME BUY' : entry.side === 'game_sale' ? 'GAME SALE' : entry.side.toUpperCase()
           const realized = realizedProfitLoss.get(entry.id)
           return <tr key={entry.id}>
             <td>{formatDate(entry.recordedAt)}</td>
-            <td><span className={`trade-type ${entry.side}`}>{entry.side === 'vehicle_purchase' ? 'SHIP' : entry.side.toUpperCase()}</span></td>
+            <td><span className={`trade-type ${entry.side === 'game_purchase' ? 'buy' : entry.side === 'game_sale' ? 'sell' : entry.side}`}>{typeLabel}</span></td>
             <td className="primary-cell">{entryName}</td>
             <td>{entry.terminal}</td>
-            <td>{isTrade ? <>{entry.quantity.toLocaleString()} SCU{entry.containerSize && entry.containerCount ? <small>{entry.containerCount} × {entry.containerSize} SCU {entry.containerCount === 1 ? 'container' : 'containers'}</small> : null}</> : '—'}</td>
-            <td>{isTrade ? formatCredits(entry.unitPrice) : '—'}</td>
+            <td>{isTrade ? <>{entry.quantity.toLocaleString()} SCU{entry.containerSize && entry.containerCount ? <small>{entry.containerCount} × {entry.containerSize} SCU {entry.containerCount === 1 ? 'container' : 'containers'}</small> : null}</> : isGameTransaction ? `${entry.quantity.toLocaleString()} ${entry.quantity === 1 ? 'item' : 'items'}` : '—'}</td>
+            <td>{isTrade || isGameTransaction ? formatCredits(entry.unitPrice) : '—'}</td>
             <td>{entry.side === 'transfer' ? `${entry.accountName} → ${entry.transferToAccountName || 'Removed account'}` : entry.accountName}</td>
             <td>{entry.side === 'transfer' ? '—' : formatCredits(entry.total)}</td>
             <td className="crew-share-cell">{entry.crewShares?.length ? <><span>-{formatCredits(entry.crewShareTotal ?? 0)}</span><small>{entry.crewShares.map((share) => `${share.memberName} ${share.sharePercent}% · ${formatCredits(share.amount)} → ${share.accountName || 'Unassigned'}`).join(' | ')}</small></> : '—'}</td>
