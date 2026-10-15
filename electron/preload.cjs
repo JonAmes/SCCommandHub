@@ -15,4 +15,22 @@ contextBridge.exposeInMainWorld('starCitizenBridge', {
     ipcRenderer.on('star-citizen:game-log-status', listener)
     return () => ipcRenderer.removeListener('star-citizen:game-log-status', listener)
   },
+  startSyncHost: () => ipcRenderer.invoke('sync:host-start'),
+  rotateSyncPairingCode: () => ipcRenderer.invoke('sync:host-rotate-code'),
+  stopSyncHost: () => ipcRenderer.invoke('sync:host-stop'),
+  listSyncClients: () => ipcRenderer.invoke('sync:list-clients'),
+  revokeSyncClient: (clientId) => ipcRenderer.invoke('sync:revoke-client', clientId),
+  requestSync: (url, data, token) => ipcRenderer.invoke('sync:client-request', { url, data, token }),
+  approveSyncPairing: (requestId) => ipcRenderer.invoke('sync:approve-pair', requestId),
+  rejectSyncPairing: (requestId) => ipcRenderer.invoke('sync:reject-pair', requestId),
+  onSyncPairRequest: (callback) => {
+    const listener = (_event, request) => callback(request)
+    ipcRenderer.on('sync:pair-request', listener)
+    return () => ipcRenderer.removeListener('sync:pair-request', listener)
+  },
+  onSyncProposal: (callback) => {
+    const listener = (_event, proposal) => callback(proposal)
+    ipcRenderer.on('sync:proposal', listener)
+    return () => ipcRenderer.removeListener('sync:proposal', listener)
+  },
 })

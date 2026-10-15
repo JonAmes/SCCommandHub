@@ -2,8 +2,21 @@ const path = require('node:path')
 const { app, BrowserWindow, dialog, ipcMain } = require('electron')
 const { detectGameInstallations, normalizeGameRoot } = require('./gameDetection.cjs')
 const { startGameLogMonitor } = require('./gameLogMonitor.cjs')
+const { createSyncHost } = require('./syncServer.cjs')
+const { createTailscaleServe } = require('./tailscaleServe.cjs')
 
 let gameLogMonitor
+let mainWindow
+const syncHost = createSyncHost({
+  port: 0,
+  onPairRequest: (request) => {
+    if (mainWindow && !mainWindow.webContents.isDestroyed()) mainWindow.webContents.send('sync:pair-request', request)
+  },
+  onProposal: (proposal) => {
+    if (mainWindow && !mainWindow.webContents.isDestroyed()) mainWindow.webContents.send('sync:proposal', proposal)
+  },
+})
+const tailscaleServe = createTailscaleServe()
 
 function stopGameLogMonitor() {
   gameLogMonitor?.stop()
@@ -37,9 +50,47 @@ ipcMain.handle('star-citizen:stop-log', () => {
   stopGameLogMonitor()
   return true
 })
+ipcMain.handle('sync:host-start', async () => {
+  const host = await syncHost.start()
+  if (host.status !== 'listening') return host
+  const served = tailscaleServe.start(host.port)
+  if (served.status !== 'ready') {
+    tailscaleServe.stop()
+    await syncHost.stop()
+    return { status: served.status === 'tailscale-cli-not-found' || served.status === 'tailscale-dns-unavailable' ? served.status : 'serve-error', detail: served.detail }
+  }
+  return { ...host, address: served.url, publicUrl: served.url }
+})
+ipcMain.handle('sync:host-rotate-code', () => syncHost.isRunning() ? syncHost.rotatePairingCode() : null)
+ipcMain.handle('sync:host-stop', async () => {
+  tailscaleServe.stop()
+  return syncHost.stop()
+})
+ipcMain.handle('sync:list-clients', () => syncHost.getPairedClients())
+ipcMain.handle('sync:revoke-client', (_event, clientId) => syncHost.revokeClient(clientId))
+ipcMain.handle('sync:approve-pair', (_event, requestId) => syncHost.approvePairing(requestId))
+ipcMain.handle('sync:reject-pair', (_event, requestId) => syncHost.rejectPairing(requestId))
+ipcMain.handle('sync:client-request', async (event, request) => {
+  if (BrowserWindow.fromWebContents(event.sender) === null || event.senderFrame !== event.sender.mainFrame) return { status: 403, data: { error: 'untrusted-renderer' } }
+  let url
+  try { url = new URL(request?.url) } catch { return { status: 400, data: { error: 'invalid-sync-url' } } }
+  if (url.protocol !== 'https:' || !url.hostname.toLocaleLowerCase().endsWith('.ts.net') || url.username || url.password || url.search || url.hash) {
+    return { status: 400, data: { error: 'invalid-sync-url' } }
+  }
+  if (!['/pair', '/pair-status', '/sync', '/disconnect'].includes(url.pathname.replace(/^\/sc-command-hub-sync/, ''))) {
+    return { status: 404, data: { error: 'invalid-sync-path' } }
+  }
+  const body = JSON.stringify(request?.data ?? {})
+  if (Buffer.byteLength(body, 'utf8') > 64 * 1024 * 1024) return { status: 413, data: { error: 'payload-too-large' } }
+  const headers = { 'Content-Type': 'application/json' }
+  if (typeof request?.token === 'string' && request.token.length < 512) headers.Authorization = `Bearer ${request.token}`
+  const response = await fetch(url, { method: 'POST', headers, body, redirect: 'error' })
+  const data = await response.json().catch(() => null)
+  return { status: response.status, data }
+})
 
 function createWindow() {
-  const window = new BrowserWindow({
+  mainWindow = new BrowserWindow({
     width: 1440,
     height: 960,
     minWidth: 360,
@@ -54,9 +105,9 @@ function createWindow() {
   })
 
   if (app.isPackaged) {
-    window.loadFile(path.join(__dirname, '../dist/index.html'))
+    mainWindow.loadFile(path.join(__dirname, '../dist/index.html'))
   } else {
-    window.loadURL('http://127.0.0.1:5173')
+    mainWindow.loadURL('http://127.0.0.1:5173')
   }
 }
 
@@ -70,7 +121,14 @@ app.whenReady().then(() => {
 
 app.on('window-all-closed', () => {
   stopGameLogMonitor()
+  tailscaleServe.stop()
+  void syncHost.stop()
+  mainWindow = undefined
   if (process.platform !== 'darwin') app.quit()
 })
 
-app.on('before-quit', stopGameLogMonitor)
+app.on('before-quit', () => {
+  stopGameLogMonitor()
+  tailscaleServe.stop()
+  void syncHost.stop()
+})

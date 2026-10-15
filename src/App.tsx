@@ -1,10 +1,14 @@
-import { useEffect, useEffectEvent, useRef, useState } from 'react'
+import { useEffect, useEffectEvent, useRef, useState, type ReactNode } from 'react'
 import packageMetadata from '../package.json'
 import { Capacitor } from '@capacitor/core'
 import { Directory, Encoding, Filesystem } from '@capacitor/filesystem'
 import { Share } from '@capacitor/share'
+import { previewSyncMerge, persistSyncSnapshot, validateSyncSnapshot, type SyncMergePreview, type SyncProposal, type SyncSnapshot } from './appSync'
+import { disconnectSyncClient, getSyncClientPairing, pairSyncClient, uploadSyncSnapshot, type SyncClientPairing } from './syncClient'
+import { SyncSettings } from './SyncSettings'
 import './App.css'
 import { clearUexCache, getUexData, readNumber, readText, type UexRow } from './uex'
+import { captureMarketPriceSnapshot, getMarketTickerEntries, getMarketTickerHistoryStatus, loadMarketPriceHistory, MARKET_SNAPSHOT_INTERVAL_MS, saveMarketPriceHistory, type MarketPriceSnapshot, type PriceChange } from './marketTicker'
 import { CONTAINER_SIZES, getContainerSelection, isContainerSizedQuantity } from './containerSizes'
 import { createBankAccount, getAccountHeldQuantity, getCommodityHoldings, getRealizedProfitLoss, loadFinanceState, previewCrewPayouts, recordAccountAdjustment, recordGameStoreTransaction, recordTrade, recordVehiclePurchase, saveFinanceState, transferFunds, type AccountTransactionKind, type BankAccount, type FinanceState, type GameStoreTransaction, type LedgerEntry, type NewTrade, type TradeSide } from './finance'
 import { addDetectedShip, addShip, clearHangarCargo, getAssignedQuantity, getShipCargoQuantity, getShipCargoUsed, getUnassignedQuantity, loadCargo, loadHangarState, removeShip, saveHangarState, setActiveShip, unloadCargo, type HangarShip, type HangarState } from './hangar'
@@ -33,6 +37,12 @@ type GameInstallation = { channel: GameChannel; path: string }
 type GameScanStatus = 'checking' | 'ready' | 'unavailable' | 'error'
 type GameLogStatus = 'idle' | 'watching' | 'waiting' | 'waiting-for-log' | 'installation-not-found' | 'invalid-channel' | 'error' | 'unavailable'
 type GameLogEvent = ({ type: 'transaction' } & PendingGameTransaction) | { type: 'ship'; id: string; channel: GameChannel; modelSlug: string; recordedAt: string }
+type SyncHostStatus = 'stopped' | 'listening' | 'tailscale-cli-not-found' | 'tailscale-dns-unavailable' | 'serve-error' | 'port-in-use' | 'start-error'
+type SyncClientStatus = 'idle' | 'pairing' | 'paired' | 'syncing' | 'uploaded' | 'error'
+type SyncHostInfo = { status: SyncHostStatus; address?: string; publicUrl?: string; port?: number; code?: string; expiresAt?: string; detail?: string }
+type SyncMergeReview = { proposal: SyncProposal; preview: SyncMergePreview }
+type SyncPairRequest = { requestId: string; clientName: string; sourceAddress: string; expiresAt: string }
+type SyncPairedClient = { clientId: string; clientName: string; sourceAddress: string; expiresAt: string }
 
 declare global {
   interface Window {
@@ -43,6 +53,16 @@ declare global {
       stopGameLog?: () => Promise<boolean>
       onGameLogEvent?: (callback: (event: GameLogEvent) => void) => () => void
       onGameLogStatus?: (callback: (status: GameLogStatus) => void) => () => void
+      startSyncHost?: () => Promise<SyncHostInfo>
+      rotateSyncPairingCode?: () => Promise<{ code: string; expiresAt: string } | null>
+      stopSyncHost?: () => Promise<boolean>
+      listSyncClients?: () => Promise<SyncPairedClient[]>
+      revokeSyncClient?: (clientId: string) => Promise<boolean>
+      requestSync?: (url: string, data: unknown, token?: string) => Promise<{ status: number; data: unknown }>
+      approveSyncPairing?: (requestId: string) => Promise<boolean>
+      rejectSyncPairing?: (requestId: string) => Promise<boolean>
+      onSyncPairRequest?: (callback: (request: SyncPairRequest) => void) => () => void
+      onSyncProposal?: (callback: (proposal: SyncProposal) => void) => () => void
     }
   }
 }
@@ -310,6 +330,7 @@ function App() {
   const [tokenInput, setTokenInput] = useState('')
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [datasetsState, setDatasetsState] = useState(emptyState)
+  const [marketHistory, setMarketHistory] = useState<MarketPriceSnapshot[]>(loadMarketPriceHistory)
   const [refreshKey, setRefreshKey] = useState(0)
   const [newLocationKeys, setNewLocationKeys] = useState<Set<string>>(() => new Set(getStoredSystemIndexSnapshot()?.newLocationKeys ?? []))
   const [search, setSearch] = useState('')
@@ -319,6 +340,7 @@ function App() {
   const [financeState, setFinanceState] = useState<FinanceState>(loadFinanceState)
   const [hangarState, setHangarState] = useState<HangarState>(loadHangarState)
   const [crewState, setCrewState] = useState<CrewState>(loadCrewState)
+  const [miningOpsState, setMiningOpsState] = useState<MiningOpsState>(loadMiningOpsState)
   const [workspaceMode, setWorkspaceMode] = useState<WorkspaceMode | null>(getStoredWorkspaceMode)
   const [setupOpen, setSetupOpen] = useState(shouldShowFirstRunSetup)
   const [routePlans, setRoutePlans] = useState<PlannedRoute[]>(loadRoutePlans)
@@ -334,9 +356,206 @@ function App() {
   const [gameLogStatus, setGameLogStatus] = useState<GameLogStatus>(() => window.starCitizenBridge ? 'idle' : 'unavailable')
   const gameLogSupported = Boolean(window.starCitizenBridge?.watchGameLog && window.starCitizenBridge.onGameLogEvent)
   const [gameLogState, setGameLogState] = useState<GameLogState>(loadGameLogState)
+  const [syncHostInfo, setSyncHostInfo] = useState<SyncHostInfo>({ status: 'stopped' })
+  const [syncPairedClients, setSyncPairedClients] = useState<SyncPairedClient[]>([])
+  const [syncPairRequests, setSyncPairRequests] = useState<SyncPairRequest[]>([])
+  const [syncProposals, setSyncProposals] = useState<SyncProposal[]>([])
+  const [syncMergeReview, setSyncMergeReview] = useState<SyncMergeReview | null>(null)
+  const [syncClientPairing, setSyncClientPairing] = useState<SyncClientPairing | null>(getSyncClientPairing)
+  const [syncClientStatus, setSyncClientStatus] = useState<SyncClientStatus>(() => getSyncClientPairing() ? 'paired' : 'idle')
+  const [syncLastUploadedAt, setSyncLastUploadedAt] = useState('')
+  const [syncError, setSyncError] = useState('')
   const gameLogStateRef = useRef(gameLogState)
   const hangarStateRef = useRef(hangarState)
   const financeStateRef = useRef(financeState)
+
+  function createSyncSnapshot(): SyncSnapshot {
+    return {
+      schemaVersion: 1,
+      exportedAt: new Date().toISOString(),
+      data: {
+        finance: financeState,
+        hangar: hangarState,
+        crew: crewState,
+        routes: routePlans,
+        miningOps: miningOpsState,
+        gameLog: gameLogState,
+        marketPriceHistory: marketHistory,
+        systemIndexSnapshot: getStoredSystemIndexSnapshot(),
+        preferences: { theme, gameChannel, workspaceMode },
+      },
+    }
+  }
+
+  const captureSyncSnapshot = useEffectEvent(createSyncSnapshot)
+
+  useEffect(() => {
+    const bridge = window.starCitizenBridge
+    if (!bridge?.onSyncPairRequest) return
+    return bridge.onSyncPairRequest((request) => {
+      setSyncPairRequests((previous) => [request, ...previous.filter((item) => item.requestId !== request.requestId)].slice(0, 10))
+    })
+  }, [])
+
+  useEffect(() => {
+    const bridge = window.starCitizenBridge
+    if (!bridge?.onSyncProposal) return
+    return bridge.onSyncProposal((proposal) => {
+      if (!validateSyncSnapshot(proposal.snapshot)) {
+        setSyncError(`Rejected an invalid sync snapshot from ${proposal.clientName}.`)
+        return
+      }
+      setSyncError('')
+      setSyncProposals((previous) => [proposal, ...previous.filter((item) => item.id !== proposal.id)].slice(0, 10))
+    })
+  }, [])
+
+  useEffect(() => {
+    if (!syncClientPairing) return
+    const timer = window.setTimeout(() => {
+      setSyncClientStatus('syncing')
+      void uploadSyncSnapshot(captureSyncSnapshot(), syncClientPairing).then(() => {
+        setSyncClientStatus('uploaded')
+        setSyncLastUploadedAt(new Date().toISOString())
+        setSyncError('')
+      }).catch((error) => {
+        setSyncClientStatus('error')
+        setSyncError(error instanceof Error ? error.message : 'Unable to upload app data.')
+      })
+    }, 1500)
+    return () => window.clearTimeout(timer)
+  }, [syncClientPairing, financeState, hangarState, crewState, routePlans, miningOpsState, gameLogState, marketHistory, newLocationKeys, theme, gameChannel, workspaceMode])
+
+  async function startSyncHost() {
+    try {
+      const result = await window.starCitizenBridge?.startSyncHost?.()
+      if (!result) return
+      setSyncHostInfo(result)
+      setSyncPairedClients(result.status === 'listening' ? await window.starCitizenBridge?.listSyncClients?.() ?? [] : [])
+      setSyncError(result.status === 'listening' ? '' : result.status === 'tailscale-cli-not-found' ? 'Install and sign in to Tailscale before hosting.' : result.status === 'tailscale-dns-unavailable' ? 'Tailscale Serve could not obtain a MagicDNS certificate.' : result.status === 'serve-error' ? result.detail || 'Tailscale Serve could not start.' : 'Unable to start the sync listener.')
+    } catch {
+      setSyncHostInfo({ status: 'start-error' })
+      setSyncError('Unable to start the sync listener.')
+    }
+  }
+
+  async function rotateSyncCode() {
+    const result = await window.starCitizenBridge?.rotateSyncPairingCode?.()
+    if (result && syncHostInfo.address && syncHostInfo.port) setSyncHostInfo({ ...syncHostInfo, code: result.code, expiresAt: result.expiresAt })
+  }
+
+  async function approveSyncPairRequest(requestId: string) {
+    const accepted = await window.starCitizenBridge?.approveSyncPairing?.(requestId)
+    if (!accepted) return
+    setSyncPairRequests((previous) => previous.filter((request) => request.requestId !== requestId))
+    setSyncPairedClients(await window.starCitizenBridge?.listSyncClients?.() ?? [])
+    setSyncError('')
+  }
+
+  async function rejectSyncPairRequest(requestId: string) {
+    await window.starCitizenBridge?.rejectSyncPairing?.(requestId)
+    setSyncPairRequests((previous) => previous.filter((request) => request.requestId !== requestId))
+  }
+
+  async function stopSyncHost() {
+    await window.starCitizenBridge?.stopSyncHost?.()
+    setSyncHostInfo({ status: 'stopped' })
+    setSyncProposals([])
+    setSyncPairRequests([])
+    setSyncPairedClients([])
+    setSyncMergeReview(null)
+  }
+
+  async function revokeSyncClient(clientId: string) {
+    const revoked = await window.starCitizenBridge?.revokeSyncClient?.(clientId)
+    if (revoked) setSyncPairedClients((previous) => previous.filter((client) => client.clientId !== clientId))
+  }
+
+  async function connectSyncClient(primaryUrl: string, code: string, clientName: string) {
+    setSyncClientStatus('pairing')
+    setSyncError('')
+    try {
+      const pairing = await pairSyncClient(primaryUrl, code, clientName)
+      setSyncClientPairing(pairing)
+      setSyncClientStatus('paired')
+      setSyncError('')
+    } catch (error) {
+      setSyncClientStatus('error')
+      setSyncError(error instanceof Error ? error.message : 'Unable to pair with the primary.')
+    }
+  }
+
+  async function disconnectSync() {
+    await disconnectSyncClient(syncClientPairing ?? undefined)
+    setSyncClientPairing(null)
+    setSyncClientStatus('idle')
+    setSyncLastUploadedAt('')
+    setSyncError('')
+  }
+
+  async function uploadNow() {
+    if (!syncClientPairing) return
+    setSyncClientStatus('syncing')
+    setSyncError('')
+    try {
+      await uploadSyncSnapshot(createSyncSnapshot(), syncClientPairing)
+      setSyncClientStatus('uploaded')
+      setSyncLastUploadedAt(new Date().toISOString())
+    } catch (error) {
+      setSyncClientStatus('error')
+      setSyncError(error instanceof Error ? error.message : 'Unable to upload app data.')
+    }
+  }
+
+  function openSyncMergeReview(proposal: SyncProposal) {
+    if (!validateSyncSnapshot(proposal.snapshot)) {
+      setSyncError('This sync snapshot is invalid and cannot be previewed.')
+      return
+    }
+    setSyncMergeReview({ proposal, preview: previewSyncMerge(createSyncSnapshot(), proposal.snapshot) })
+  }
+
+  function dismissSyncProposal(proposalId: string) {
+    setSyncProposals((previous) => previous.filter((proposal) => proposal.id !== proposalId))
+    if (syncMergeReview?.proposal.id === proposalId) setSyncMergeReview(null)
+  }
+
+  function applySyncMerge() {
+    if (!syncMergeReview) return
+    const merged = syncMergeReview.preview.snapshot
+    if (!persistSyncSnapshot(merged)) {
+      setSyncError('Could not save the merged snapshot. No sync changes were applied.')
+      return
+    }
+
+    financeStateRef.current = merged.data.finance
+    hangarStateRef.current = merged.data.hangar
+    setFinanceState(merged.data.finance)
+    setHangarState(merged.data.hangar)
+    setCrewState(merged.data.crew)
+    setRoutePlans(merged.data.routes)
+    setMiningOpsState(merged.data.miningOps)
+    gameLogStateRef.current = merged.data.gameLog
+    setGameLogState(merged.data.gameLog)
+    setMarketHistory(merged.data.marketPriceHistory)
+    saveMarketPriceHistory(merged.data.marketPriceHistory)
+    setNewLocationKeys(new Set(merged.data.systemIndexSnapshot?.newLocationKeys ?? []))
+    setTheme(merged.data.preferences.theme)
+    setGameChannel(merged.data.preferences.gameChannel)
+    setWorkspaceMode(merged.data.preferences.workspaceMode)
+    setSetupOpen(false)
+    setGameScanRevision((revision) => revision + 1)
+    dismissSyncProposal(syncMergeReview.proposal.id)
+    setSyncError('')
+    setNotice('Approved sync merge applied on the primary device.')
+  }
+
+  const capturePriceSnapshot = useEffectEvent((rows: UexRow[]) => {
+    const next = captureMarketPriceSnapshot(marketHistory, rows)
+    if (next.length === marketHistory.length && next.at(-1)?.capturedAt === marketHistory.at(-1)?.capturedAt) return
+    setMarketHistory(next)
+    saveMarketPriceHistory(next)
+  })
 
   useEffect(() => {
     let active = true
@@ -351,6 +570,7 @@ function App() {
             window.localStorage.setItem(systemIndexKey, JSON.stringify(snapshot))
           } catch {}
         }
+        if (key === 'commodities_prices_all' && active) capturePriceSnapshot(rows)
         if (active) setDatasetsState((previous) => ({ ...previous, [key]: { rows, status: 'ready' } }))
       } catch (error) {
         if (active) {
@@ -362,6 +582,26 @@ function App() {
 
     return () => { active = false }
   }, [token, refreshKey])
+
+  useEffect(() => {
+    let active = true
+    const timer = window.setInterval(async () => {
+      try {
+        const rows = await getUexData<UexRow[]>('commodities_prices_all', token)
+        if (!active) return
+        capturePriceSnapshot(rows)
+        setDatasetsState((previous) => ({ ...previous, commodities_prices_all: { rows, status: 'ready' } }))
+      } catch (error) {
+        if (!active) return
+        const message = error instanceof Error ? error.message : 'Unable to load this resource.'
+        setDatasetsState((previous) => ({ ...previous, commodities_prices_all: { ...previous.commodities_prices_all, status: 'error', error: message } }))
+      }
+    }, MARKET_SNAPSHOT_INTERVAL_MS)
+    return () => {
+      active = false
+      window.clearInterval(timer)
+    }
+  }, [token])
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme
@@ -658,6 +898,19 @@ function App() {
     gameLogStateRef.current = nextGameLogState
     setGameLogState(nextGameLogState)
     saveGameLogState(nextGameLogState)
+  }
+
+  function addMiningScan(scan: NewRockScan) {
+    const result = addRockScan(miningOpsState, scan)
+    if (!result.state) return result.error || 'Unable to save rock scan.'
+    setMiningOpsState(result.state)
+    return saveMiningOpsState(result.state) ? '' : 'Scan saved for this session, but browser storage is unavailable.'
+  }
+
+  function removeMiningScan(scanId: string) {
+    const next = removeRockScan(miningOpsState, scanId)
+    setMiningOpsState(next)
+    saveMiningOpsState(next)
   }
 
   function confirmRouteBuy(plan: PlannedRoute) {
@@ -981,7 +1234,7 @@ function App() {
             {section !== 'trade' && section !== 'inventory' && section !== 'settings' && <div className="search-field"><span aria-hidden="true">⌕</span><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder={`Search ${sectionTitle(section).toLowerCase()}`} aria-label={`Search ${sectionTitle(section).toLowerCase()}`} /><kbd>/</kbd></div>}
           </div>}
 
-          {section === 'dashboard' && <DashboardView financeState={financeState} hangarState={hangarState} activeShip={activeShip} crewState={crewState} routePlans={routePlans} prices={prices} priceState={datasetsState.commodities_prices_all} onNavigate={setSection} />}
+          {section === 'dashboard' && <DashboardView financeState={financeState} hangarState={hangarState} activeShip={activeShip} crewState={crewState} routePlans={routePlans} prices={prices} priceState={datasetsState.commodities_prices_all} marketHistory={marketHistory} onNavigate={setSection} />}
           {section === 'settings' && <ThemeSettingsView
             theme={theme}
             onChange={updateTheme}
@@ -994,6 +1247,31 @@ function App() {
             onGameChannelChange={updateGameChannel}
             onRescanGameInstallations={rescanGameInstallations}
             onChooseGameRoot={chooseGameInstallRoot}
+            syncSettings={<SyncSettings
+              desktopAvailable={Boolean(window.starCitizenBridge?.startSyncHost)}
+              hostInfo={syncHostInfo}
+              pairRequests={syncPairRequests}
+              pairedClients={syncPairedClients}
+              proposals={syncProposals}
+              mergeReview={syncMergeReview}
+              clientPairing={syncClientPairing}
+              clientStatus={syncClientStatus}
+              lastUploadedAt={syncLastUploadedAt}
+              error={syncError}
+              onStartHost={() => { void startSyncHost() }}
+              onRotateCode={() => { void rotateSyncCode() }}
+              onStopHost={() => { void stopSyncHost() }}
+              onApprovePair={(requestId) => { void approveSyncPairRequest(requestId) }}
+              onRejectPair={(requestId) => { void rejectSyncPairRequest(requestId) }}
+              onRevokeClient={(clientId) => { void revokeSyncClient(clientId) }}
+              onReviewProposal={openSyncMergeReview}
+              onDismissProposal={dismissSyncProposal}
+              onApplyMerge={applySyncMerge}
+              onCloseMergeReview={() => setSyncMergeReview(null)}
+              onConnectClient={(primaryUrl, code, clientName) => { void connectSyncClient(primaryUrl, code, clientName) }}
+              onDisconnectClient={() => { void disconnectSync() }}
+              onUploadNow={() => { void uploadNow() }}
+            />}
           />}
           {section === 'trade' && <TradeView
             prices={prices}
@@ -1037,7 +1315,7 @@ function App() {
             onBuy={(vehicle, offers) => setVehiclePurchase({ vehicle, offers })}
           />}
           {section === 'systems' && <SystemsView rows={systems} terminals={terminals} prices={prices} newLocationKeys={newLocationKeys} state={datasetsState.star_systems} terminalState={datasetsState.terminals} priceState={datasetsState.commodities_prices_all} search={search} />}
-          {section === 'mining' && <MiningView prices={prices} commodities={commodities} state={datasetsState.commodities_prices_all} methods={refineryMethods} methodsState={datasetsState.refineries_methods} yields={refineryYields} yieldsState={datasetsState.refineries_yields} capacities={refineryCapacities} capacitiesState={datasetsState.refineries_capacities} search={search} />}
+          {section === 'mining' && <MiningView prices={prices} commodities={commodities} state={datasetsState.commodities_prices_all} methods={refineryMethods} methodsState={datasetsState.refineries_methods} yields={refineryYields} yieldsState={datasetsState.refineries_yields} capacities={refineryCapacities} capacitiesState={datasetsState.refineries_capacities} search={search} miningOpsState={miningOpsState} onAddScan={addMiningScan} onRemoveScan={removeMiningScan} />}
           {section === 'fuelPrices' && <FuelPricesView rows={filteredRows(fuelPrices, ['commodity_name', 'terminal_name', 'star_system_name', 'planet_name', 'city_name'])} terminals={terminals} state={datasetsState.fuel_prices_all} />}
           {section === 'inventory' && <ItemCatalogView key={token} token={token} />}
 
@@ -1161,7 +1439,48 @@ function FirstRunSetupDialog({ initialCrewState, onComplete, onSkip }: { initial
   </div>
 }
 
-function DashboardView({ financeState, hangarState, activeShip, crewState, routePlans, prices, priceState, onNavigate }: {
+function formatTickerChange(change: PriceChange | null, historyStatus: 'ready' | 'collecting' | 'stale') {
+  if (!change) return <span className="ticker-change unavailable">{getTickerChangeLabel(change, historyStatus)}</span>
+  const direction = change.amount > 0 ? 'up' : change.amount < 0 ? 'down' : 'flat'
+  const prefix = change.amount > 0 ? '+' : change.amount < 0 ? '−' : ''
+  return <span className={`ticker-change ${direction}`}>{prefix}{formatCredits(Math.abs(change.amount))} · {prefix}{Math.abs(change.percent).toFixed(2)}%</span>
+}
+
+function getTickerChangeLabel(change: PriceChange | null, historyStatus: 'ready' | 'collecting' | 'stale') {
+  if (!change) return historyStatus === 'stale' ? '24-hour baseline stale' : historyStatus === 'collecting' ? 'collecting 24-hour history' : '24-hour change unavailable'
+  const direction = change.amount > 0 ? 'up' : change.amount < 0 ? 'down' : 'unchanged'
+  return `${direction} ${formatCredits(Math.abs(change.amount))}, ${Math.abs(change.percent).toFixed(2)} percent`
+}
+
+function DashboardTicker({ prices, priceState, history }: { prices: UexRow[]; priceState: DatasetState; history: MarketPriceSnapshot[] }) {
+  const historyStatus = getMarketTickerHistoryStatus(history)
+  const entries = getMarketTickerEntries(prices, history)
+  const hasQuotes = priceState.status === 'ready' && entries.length > 0
+  const statusMessage = priceState.status === 'loading' || priceState.status === 'idle'
+    ? 'Loading commodity quotes…'
+    : priceState.status === 'error'
+      ? 'Commodity quotes are currently unavailable.'
+      : !entries.length ? 'No current commodity quotes.'
+        : historyStatus === 'collecting' ? 'Collecting 24-hour history; changes will appear after a full baseline is available.'
+          : historyStatus === 'stale' ? '24-hour history is stale. New snapshots are being collected.'
+            : ''
+  const repeatedEntries = entries.length > 1 ? [...entries, ...entries] : entries
+
+  return <section className="dashboard-ticker" aria-label="Commodity market ticker">
+    <div className="dashboard-ticker-heading"><strong>COMMODITY MARKET</strong><span>MEDIAN TERMINAL QUOTES</span><span className="dashboard-ticker-window">24H CHANGE</span></div>
+    {hasQuotes ? <div className="dashboard-ticker-viewport" role="region" aria-label="Commodity prices, horizontally scrollable" tabIndex={0}>
+      <div className={`dashboard-ticker-track ${entries.length > 1 ? 'is-moving' : ''}`} role="list" style={entries.length > 1 ? { animationDuration: `${Math.max(24, entries.length * 3)}s` } : undefined}>
+        {repeatedEntries.map((entry, index) => <div className="dashboard-ticker-item" role="listitem" key={`${entry.commodityId}-${index}`} aria-hidden={index >= entries.length} aria-label={`${entry.commodityName}: buy ${entry.buyPrice === null ? 'unavailable' : formatCredits(entry.buyPrice)}, ${getTickerChangeLabel(entry.buyChange, historyStatus)}; sell ${entry.sellPrice === null ? 'unavailable' : formatCredits(entry.sellPrice)}, ${getTickerChangeLabel(entry.sellChange, historyStatus)}`}>
+          <strong className="dashboard-ticker-commodity">{entry.commodityName}</strong>
+          <span className="dashboard-ticker-side"><small>BUY</small><b>{entry.buyPrice === null ? '—' : formatCredits(entry.buyPrice)}</b>{formatTickerChange(entry.buyChange, historyStatus)}</span>
+          <span className="dashboard-ticker-side"><small>SELL</small><b>{entry.sellPrice === null ? '—' : formatCredits(entry.sellPrice)}</b>{formatTickerChange(entry.sellChange, historyStatus)}</span>
+        </div>)}
+      </div>
+    </div> : <div className="dashboard-ticker-message" role="status">{statusMessage}</div>}
+  </section>
+}
+
+function DashboardView({ financeState, hangarState, activeShip, crewState, routePlans, prices, priceState, marketHistory, onNavigate }: {
   financeState: FinanceState
   hangarState: HangarState
   activeShip?: HangarShip
@@ -1169,6 +1488,7 @@ function DashboardView({ financeState, hangarState, activeShip, crewState, route
   routePlans: PlannedRoute[]
   prices: UexRow[]
   priceState: DatasetState
+  marketHistory: MarketPriceSnapshot[]
   onNavigate: (section: Section) => void
 }) {
   const holdings = getCommodityHoldings(financeState)
@@ -1185,6 +1505,7 @@ function DashboardView({ financeState, hangarState, activeShip, crewState, route
       <div className="dashboard-metric"><span>ACTIVE SHIP</span><strong>{activeShip?.name ?? 'None selected'}</strong><small>{activeShip ? `${formatQuantity(getShipCargoUsed(hangarState, activeShip.id))} / ${formatQuantity(activeShip.cargoCapacity)} SCU used` : 'Choose a ship in your hangar'}</small></div>
       <div className="dashboard-metric"><span>CREW SHARE</span><strong>{getCrewSharePercent(crewState).toFixed(2)}%</strong><small>{crewState.members.length} members · future sales</small></div>
     </div>
+    <DashboardTicker prices={prices} priceState={priceState} history={marketHistory} />
     <div className="dashboard-data-status"><span className={`status-dot ${priceState.status === 'ready' ? 'is-live' : priceState.status === 'loading' ? 'is-loading' : ''}`} /><span>{priceState.status === 'ready' ? `${prices.length.toLocaleString()} UEX price records loaded` : priceState.status === 'loading' ? 'Loading UEX market data' : priceState.status === 'error' ? 'UEX price data unavailable' : 'UEX price data idle'}</span><button type="button" onClick={() => onNavigate('commodities')}>Browse market data <span>↗</span></button></div>
     <div className="dashboard-columns">
       <section className="data-section dashboard-panel dashboard-activity-panel">
@@ -1231,7 +1552,7 @@ function NavButton({ active, onClick, icon, label, count }: { active: boolean; o
   return <button className={`nav-button ${active ? 'active' : ''}`} onClick={onClick} type="button"><span className="nav-icon" aria-hidden="true">{icon}</span><span>{label}</span>{count !== undefined && <span className="nav-count">{count.toLocaleString()}</span>}</button>
 }
 
-function ThemeSettingsView({ theme, onChange, onFactoryReset, gameChannel, gameInstallations, gameScanStatus, gameLogStatus, gameLogSupported, onGameChannelChange, onRescanGameInstallations, onChooseGameRoot }: {
+function ThemeSettingsView({ theme, onChange, onFactoryReset, gameChannel, gameInstallations, gameScanStatus, gameLogStatus, gameLogSupported, onGameChannelChange, onRescanGameInstallations, onChooseGameRoot, syncSettings }: {
   theme: AppTheme
   onChange: (theme: AppTheme) => void
   onFactoryReset: () => boolean
@@ -1243,9 +1564,10 @@ function ThemeSettingsView({ theme, onChange, onFactoryReset, gameChannel, gameI
   onGameChannelChange: (channel: GameChannel) => void
   onRescanGameInstallations: () => void
   onChooseGameRoot: () => void
+  syncSettings: ReactNode
 }) {
   const [resetOpen, setResetOpen] = useState(false)
-  const [appearanceExpanded, setAppearanceExpanded] = useState(true)
+  const [appearanceExpanded, setAppearanceExpanded] = useState(false)
   const [shutdownOpen, setShutdownOpen] = useState(false)
   const themes: { id: AppTheme; name: string; description: string; swatches: string[] }[] = [
     { id: 'field', name: 'UEX Field', description: 'The original green operations palette.', swatches: ['#202923', '#d9f76b', '#f4f6f3'] },
@@ -1305,6 +1627,7 @@ function ThemeSettingsView({ theme, onChange, onFactoryReset, gameChannel, gameI
       </div>
       <div className="table-note"><span>Channel selection is saved on this device.</span><span>Ship detection may appear after you leave the ship.</span></div>
     </section>
+    {syncSettings}
     <section className="data-section settings-reset-section">
       <div className="section-toolbar"><div><h2>Factory reset</h2><span>Permanently clear personal operating data from this browser.</span></div><span className="table-label">DESTRUCTIVE ACTION</span></div>
       <div className="settings-reset-row"><div><strong>Reset local data</strong><span>Deletes ships and cargo, crew and roles, bank accounts, ledger history, pending Game.log activity, and saved route plans. Your UEX token and theme are kept.</span></div><button className="danger-button" type="button" onClick={() => setResetOpen(true)}>Factory reset</button></div>
@@ -2523,7 +2846,7 @@ function SystemsView({ rows, terminals, prices, newLocationKeys, state, terminal
   </section>
 }
 
-function MiningView({ prices, commodities, state, methods, methodsState, yields, yieldsState, capacities, capacitiesState, search }: {
+function MiningView({ prices, commodities, state, methods, methodsState, yields, yieldsState, capacities, capacitiesState, search, miningOpsState, onAddScan, onRemoveScan }: {
   prices: UexRow[]
   commodities: UexRow[]
   state: DatasetState
@@ -2534,9 +2857,11 @@ function MiningView({ prices, commodities, state, methods, methodsState, yields,
   capacities: UexRow[]
   capacitiesState: DatasetState
   search: string
+  miningOpsState: MiningOpsState
+  onAddScan: (scan: NewRockScan) => string
+  onRemoveScan: (scanId: string) => void
 }) {
   const [tab, setTab] = useState<'market' | 'calculator' | 'refinery' | 'scans'>('market')
-  const [miningOpsState, setMiningOpsState] = useState<MiningOpsState>(loadMiningOpsState)
   const rawMinerals = new Set(commodities.filter((row) => readNumber(row, 'is_mineral') === 1 && readNumber(row, 'is_raw') === 1).map((row) => readText(row, 'name')))
   const normalizedSearch = search.trim().toLocaleLowerCase()
   const oreRows = prices.filter((row) => rawMinerals.has(readText(row, 'commodity_name')) || /\bore\b|mineral/i.test(readText(row, 'commodity_name')))
@@ -2544,19 +2869,6 @@ function MiningView({ prices, commodities, state, methods, methodsState, yields,
   const methodRows = methods.filter((row) => !normalizedSearch || `${readText(row, 'name')} ${readText(row, 'code')}`.toLocaleLowerCase().includes(normalizedSearch))
   const yieldRows = yields.filter((row) => !normalizedSearch || `${readText(row, 'commodity_name')} ${readText(row, 'terminal_name')} ${readText(row, 'star_system_name')}`.toLocaleLowerCase().includes(normalizedSearch))
   const capacityRows = capacities.filter((row) => !normalizedSearch || `${readText(row, 'terminal_name')} ${readText(row, 'star_system_name')} ${readText(row, 'planet_name')}`.toLocaleLowerCase().includes(normalizedSearch))
-
-  function addScan(scan: NewRockScan) {
-    const result = addRockScan(miningOpsState, scan)
-    if (!result.state) return result.error || 'Unable to save rock scan.'
-    setMiningOpsState(result.state)
-    return saveMiningOpsState(result.state) ? '' : 'Scan saved for this session, but browser storage is unavailable.'
-  }
-
-  function deleteScan(scanId: string) {
-    const next = removeRockScan(miningOpsState, scanId)
-    setMiningOpsState(next)
-    saveMiningOpsState(next)
-  }
 
   return <>
     <div className="module-note"><span className="note-mark">⌁</span><div><strong>Mining &amp; refinery tools</strong><p>Uses UEX commodity market listings and refinery reports. UEX does not provide live rock scans, so record scanner readings manually in the local scan log.</p></div></div>
@@ -2577,7 +2889,7 @@ function MiningView({ prices, commodities, state, methods, methodsState, yields,
       {yieldsState.status === 'loading' || yieldsState.status === 'idle' ? <LoadingPanel label="Loading refinery yield reports" /> : yieldsState.status === 'error' ? <ErrorPanel resource="Refinery yields" message={yieldsState.error} /> : <DataPanel title="Refinery yield reports" subtitle={`${yieldRows.length} UEX reports · raw reported values`} columns={['COMMODITY', 'REFINERY', 'SYSTEM', 'CURRENT VALUE', 'WEEK', 'MONTH']} rows={yieldRows.slice(0, 400).map((row) => [readText(row, 'commodity_name'), readText(row, 'terminal_name'), readText(row, 'star_system_name') || '—', readText(row, 'value') || '—', readText(row, 'value_week') || '—', readText(row, 'value_month') || '—'])} />}
       {capacitiesState.status === 'loading' || capacitiesState.status === 'idle' ? <LoadingPanel label="Loading refinery capacity reports" /> : capacitiesState.status === 'error' ? <ErrorPanel resource="Refinery capacities" message={capacitiesState.error} /> : <DataPanel title="Refinery capacity reports" subtitle={`${capacityRows.length} UEX reports · values shown as reported`} columns={['REFINERY', 'SYSTEM', 'CURRENT VALUE', 'WEEK', 'MONTH']} rows={capacityRows.map((row) => [readText(row, 'terminal_name'), readText(row, 'star_system_name') || '—', readText(row, 'value') || '—', readText(row, 'value_week') || '—', readText(row, 'value_month') || '—'])} />}
     </div>}
-    {tab === 'scans' && <RockScanLog scans={miningOpsState.scans} minerals={commodities.filter((row) => readNumber(row, 'is_mineral') === 1 && readNumber(row, 'is_raw') === 1).map((row) => readText(row, 'name')).filter(Boolean).sort((left, right) => left.localeCompare(right))} onAdd={addScan} onRemove={deleteScan} />}
+    {tab === 'scans' && <RockScanLog scans={miningOpsState.scans} minerals={commodities.filter((row) => readNumber(row, 'is_mineral') === 1 && readNumber(row, 'is_raw') === 1).map((row) => readText(row, 'name')).filter(Boolean).sort((left, right) => left.localeCompare(right))} onAdd={onAddScan} onRemove={onRemoveScan} />}
   </>
 }
 

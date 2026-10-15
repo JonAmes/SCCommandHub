@@ -66,6 +66,14 @@ npm run mobile:ios
 
 Select an iOS simulator or configured device in Xcode to run the app. Installing on devices or distributing through the App Store requires Apple signing credentials and provisioning.
 
+## Device sync
+
+Device sync uses Tailscale Serve for an HTTPS address available only within your tailnet. Install and sign in to Tailscale on the primary Windows/Linux desktop and each client device. The desktop also needs the Tailscale CLI available to SC Command Hub, and Serve enabled for your tailnet. SC Command Hub binds its service to loopback and asks Tailscale Serve for HTTPS port `8443` at `/sc-command-hub-sync`; no public listener or relay is used.
+
+On the desktop, open Settings and start the primary listener. Share the displayed HTTPS URL and the six-digit pairing code (valid for two minutes) only with the intended client. The client enters both values and requests pairing; approve that request on the primary. Paired client credentials live for 24 hours on that client, while the primary keeps them in memory and clears them when its listener stops. Once paired, the client uploads its local app data to the primary. “Uploaded for review” means the primary still needs to approve the merge. The primary remains canonical and never sends its data back to clients.
+
+Sync includes accounts, ledger, hangar/cargo, crew, routes, mining records, Game.log events, market history, and selected preferences. UEX tokens, Star Citizen install paths, and pairing credentials are not part of sync snapshots. Pair credentials are stored locally on each client for up to 24 hours; stopping the primary clears its paired clients, so they must pair again after restart. The primary keeps account-conflict values and remaps incoming ledger references where possible. Pending Game.log transactions remain pending on the primary for account assignment and confirmation.
+
 ## Local data
 
 Accounts, trades, routes, crew, hangar, and mining records are stored on the device. They are not synchronized between installations or platforms.

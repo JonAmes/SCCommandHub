@@ -18,6 +18,7 @@ export type PendingGameTransaction = {
 export type GameLogState = {
   pendingTransactions: PendingGameTransaction[]
   processedEventIds: string[]
+  resolvedEventIds?: string[]
 }
 
 const emptyState = (): GameLogState => ({ pendingTransactions: [], processedEventIds: [] })
@@ -51,6 +52,9 @@ export function loadGameLogState(): GameLogState {
       processedEventIds: Array.isArray(value.processedEventIds)
         ? value.processedEventIds.filter((id): id is string => typeof id === 'string').slice(-2000)
         : [],
+      resolvedEventIds: Array.isArray(value.resolvedEventIds)
+        ? value.resolvedEventIds.filter((id): id is string => typeof id === 'string').slice(-2000)
+        : [],
     }
   } catch {
     return emptyState()
@@ -67,7 +71,7 @@ export function saveGameLogState(state: GameLogState) {
 }
 
 export function queueGameLogTransaction(state: GameLogState, transaction: PendingGameTransaction): GameLogState {
-  if (state.processedEventIds.includes(transaction.id)) return state
+  if (state.processedEventIds.includes(transaction.id) || state.resolvedEventIds?.includes(transaction.id)) return state
   return {
     pendingTransactions: [...state.pendingTransactions, transaction].slice(-250),
     processedEventIds: [...state.processedEventIds, transaction.id].slice(-2000),
@@ -78,6 +82,7 @@ export function removePendingGameTransaction(state: GameLogState, transactionId:
   return {
     ...state,
     pendingTransactions: state.pendingTransactions.filter((transaction) => transaction.id !== transactionId),
+    resolvedEventIds: [...new Set([...(state.resolvedEventIds ?? []), transactionId])].slice(-2000),
   }
 }
 

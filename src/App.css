@@ -346,6 +346,25 @@
 .dashboard-metric > span { display: block; color: #879289; font: 8px var(--mono); }
 .dashboard-metric > strong { display: block; overflow: hidden; margin-top: 8px; color: #2d3b30; font: 17px var(--mono); text-overflow: ellipsis; white-space: nowrap; }
 .dashboard-metric > small { display: block; margin-top: 5px; color: #929c93; font-size: 9px; }
+.dashboard-ticker { min-width: 0; margin-top: 12px; overflow: hidden; border: 1px solid var(--line); background: var(--surface); }
+.dashboard-ticker-heading { min-height: 31px; display: flex; align-items: center; gap: 12px; padding: 0 11px; border-bottom: 1px solid var(--line); color: var(--muted); font: 8px var(--mono); }
+.dashboard-ticker-heading > strong { color: var(--ink); font-weight: 600; }
+.dashboard-ticker-window { margin-left: auto; }
+.dashboard-ticker-viewport { width: 100%; overflow: hidden; outline-offset: -2px; }
+.dashboard-ticker-track { width: max-content; min-width: 100%; display: flex; align-items: stretch; animation-name: dashboard-ticker-scroll; animation-timing-function: linear; animation-iteration-count: infinite; }
+.dashboard-ticker-track.is-moving { animation-duration: 60s; }
+.dashboard-ticker-viewport:hover .dashboard-ticker-track, .dashboard-ticker-viewport:focus-within .dashboard-ticker-track { animation-play-state: paused; }
+.dashboard-ticker-item { min-width: 310px; display: grid; grid-template-columns: minmax(95px, 1fr) minmax(95px, .8fr) minmax(95px, .8fr); align-items: center; gap: 12px; padding: 10px 14px; border-right: 1px solid var(--line); }
+.dashboard-ticker-commodity { min-width: 0; overflow: hidden; color: var(--ink); font-size: 10px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
+.dashboard-ticker-side { min-width: 0; display: grid; grid-template-columns: auto 1fr; align-items: baseline; gap: 3px 6px; }
+.dashboard-ticker-side small { grid-row: 1 / span 2; color: var(--muted); font: 8px var(--mono); }
+.dashboard-ticker-side b { overflow: hidden; color: var(--ink); font: 9px var(--mono); text-overflow: ellipsis; white-space: nowrap; }
+.ticker-change { overflow: hidden; font: 8px var(--mono); text-overflow: ellipsis; white-space: nowrap; }
+.ticker-change.up { color: #43804d; }
+.ticker-change.down { color: #aa594c; }
+.ticker-change.flat { color: var(--muted); }
+.dashboard-ticker-message { min-height: 45px; display: flex; align-items: center; padding: 10px 12px; color: var(--muted); font-size: 9px; }
+@keyframes dashboard-ticker-scroll { to { transform: translateX(-50%); } }
 .dashboard-data-status { min-height: 39px; display: flex; align-items: center; gap: 8px; margin-top: 12px; padding: 0 11px; border: 1px solid var(--line); background: #fff; color: #778276; font-size: 9px; }
 .dashboard-data-status button { margin-left: auto; border: 0; background: transparent; color: #536d3e; font-size: 9px; cursor: pointer; }
 .dashboard-data-status button span { padding-left: 4px; }
@@ -405,6 +424,43 @@
 .pending-game-account > span { color: var(--muted); font: 8px var(--mono); }
 .pending-game-account select { min-width: 0; width: 100%; height: 32px; border: 1px solid var(--line); background: var(--surface); padding: 0 8px; color: var(--ink); font-size: 10px; }
 .pending-game-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.app-sync-section { margin-top: 14px; }
+.sync-section-content { display: grid; gap: 14px; padding: 15px; }
+.sync-host-controls { min-width: 0; display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; }
+.sync-status-copy { color: var(--ink); font-size: 10px; }
+.sync-last-upload { display: block; margin-top: 4px; color: var(--muted); font-size: 9px; }
+.sync-action-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.sync-pairing-code { width: fit-content; display: grid; gap: 6px; padding: 12px 15px; border: 1px solid var(--line); background: var(--surface); }
+.sync-pairing-code > span { color: var(--muted); font: 8px var(--mono); }
+.sync-pairing-code > strong { color: var(--ink); font: 23px var(--mono); }
+.sync-pairing-code > small { color: var(--muted); font-size: 9px; }
+.sync-review-list { display: grid; }
+.sync-review-list > h3, .sync-conflict-list > h3 { margin: 0; padding: 10px 0; color: var(--muted); font: 9px var(--mono); text-transform: uppercase; }
+.sync-review-row { min-width: 0; display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; padding: 11px 0; border-top: 1px solid var(--line); }
+.sync-review-row > div:first-child { min-width: 0; display: grid; gap: 4px; }
+.sync-review-row strong { overflow-wrap: anywhere; color: var(--ink); font-size: 10px; }
+.sync-review-row small { color: var(--muted); font-size: 9px; }
+.sync-client-form { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); align-items: end; gap: 10px; }
+.sync-client-form > label { min-width: 0; display: grid; gap: 5px; }
+.sync-client-form > label > span { color: var(--muted); font: 8px var(--mono); }
+.sync-client-form input { min-width: 0; width: 100%; height: 33px; border: 1px solid var(--line); background: var(--surface); padding: 0 9px; color: var(--ink); font: 10px var(--mono); }
+.sync-client-form > button { justify-self: start; }
+.sync-error { margin-top: 0; }
+.sync-merge-modal { width: min(620px, 100%); max-height: min(760px, calc(100dvh - 32px)); overflow-y: auto; }
+.sync-merge-summary { display: flex; flex-wrap: wrap; gap: 12px; padding: 14px 21px; border-bottom: 1px solid var(--line); color: var(--muted); font-size: 9px; }
+.sync-merge-summary strong { color: var(--ink); }
+.sync-merge-stats { display: grid; padding: 8px 21px; }
+.sync-merge-stats > div { display: flex; justify-content: space-between; gap: 10px; padding: 8px 0; border-bottom: 1px solid var(--line); font-size: 9px; }
+.sync-merge-stats strong { color: var(--ink); font-weight: 600; }
+.sync-merge-stats span { color: var(--muted); text-align: right; }
+.sync-balance-review { display: grid; margin: 0 21px 14px; padding: 9px 11px; background: var(--canvas); }
+.sync-balance-review > h3 { margin: 0; padding: 4px 0 8px; color: var(--muted); font: 8px var(--mono); text-transform: uppercase; }
+.sync-balance-review > div { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 8px; padding: 6px 0; border-top: 1px solid var(--line); font-size: 9px; }
+.sync-balance-review strong { color: var(--ink); }
+.sync-balance-review span { color: var(--muted); text-align: right; }
+.sync-balance-review b { padding: 0 5px; color: var(--ink); font-weight: 600; }
+.sync-conflict-list { max-height: 180px; overflow-y: auto; margin: 0 21px; padding: 0 10px; border-left: 2px solid #d8ad6b; background: var(--canvas); }
+.sync-conflict-list p { margin: 0; padding: 5px 0; color: var(--muted); font-size: 9px; line-height: 1.45; }
 .settings-reset-row { display: flex; align-items: center; justify-content: space-between; gap: 20px; padding: 16px; }
 .settings-reset-row > div { min-width: 0; display: grid; gap: 5px; }
 .settings-reset-row strong { color: #39443b; font-size: 10px; }
@@ -796,6 +852,9 @@
   .finance-overview > div:first-child { grid-column: 1 / -1; }
   .dashboard-metric { min-height: 80px; padding: 12px; }
   .dashboard-metric > strong { font-size: 14px; }
+  .dashboard-ticker-heading { gap: 8px; font-size: 7px; }
+  .dashboard-ticker-viewport { overflow-x: auto; scrollbar-width: thin; }
+  .dashboard-ticker-item { min-width: 290px; gap: 8px; padding-inline: 10px; }
   .dashboard-data-status { align-items: flex-start; flex-wrap: wrap; padding-block: 9px; }
   .dashboard-data-status button { margin-left: 15px; }
   .dashboard-activity-row { gap: 7px; padding-inline: 9px; }
@@ -875,6 +934,11 @@
   .record-count { align-self: center; }
   .data-footer { align-items: flex-start; flex-direction: column; gap: 7px; }
   .data-footer > span:last-child { margin-left: 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .dashboard-ticker-viewport { overflow-x: auto; scrollbar-width: thin; }
+  .dashboard-ticker-track { animation: none !important; }
 }
 
 :root:is([data-theme='night'], [data-theme='redshift']) body { background: var(--canvas); color: var(--ink); }
