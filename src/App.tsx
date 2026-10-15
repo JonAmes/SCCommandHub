@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import packageMetadata from '../package.json'
 import { Capacitor } from '@capacitor/core'
 import { Directory, Encoding, Filesystem } from '@capacitor/filesystem'
 import { Share } from '@capacitor/share'
@@ -747,7 +748,7 @@ function App() {
             <span className={`status-dot ${allReady ? 'is-live' : anyLoading ? 'is-loading' : ''}`} />
             <div><strong>{allReady ? 'UEX DATA LINK' : anyLoading ? 'CONNECTING' : anyReady ? 'PARTIAL DATA' : 'DATA LINK IDLE'}</strong><small>{allReady ? 'Community data · live' : anyReady ? `${readyCount} of ${datasets.length} resources loaded` : 'Check API settings'}</small></div>
           </div>
-          <div className="sidebar-foot"><span>{workspaceMode ? `${workspaceMode.toUpperCase()} WORKSPACE` : 'STAR CITIZEN'}</span><span>UEX API 2.0</span></div>
+          <div className="sidebar-foot"><span>{workspaceMode ? `${workspaceMode.toUpperCase()} WORKSPACE` : 'STAR CITIZEN'}</span><span>UEX API 2.0</span><span>v{packageMetadata.version}</span></div>
         </div>
       </aside>
 
@@ -1020,6 +1021,8 @@ function NavButton({ active, onClick, icon, label, count }: { active: boolean; o
 
 function ThemeSettingsView({ theme, onChange, onFactoryReset }: { theme: AppTheme; onChange: (theme: AppTheme) => void; onFactoryReset: () => boolean }) {
   const [resetOpen, setResetOpen] = useState(false)
+  const [appearanceExpanded, setAppearanceExpanded] = useState(true)
+  const [shutdownOpen, setShutdownOpen] = useState(false)
   const themes: { id: AppTheme; name: string; description: string; swatches: string[] }[] = [
     { id: 'field', name: 'UEX Field', description: 'The original green operations palette.', swatches: ['#202923', '#d9f76b', '#f4f6f3'] },
     { id: 'amber', name: 'Industrial Amber', description: 'Warm amber accents on a graphite workspace.', swatches: ['#29261f', '#efc36d', '#f6f2e9'] },
@@ -1030,22 +1033,38 @@ function ThemeSettingsView({ theme, onChange, onFactoryReset }: { theme: AppThem
 
   return <>
     <section className="data-section theme-settings-section">
-      <div className="section-toolbar"><div><h2>Appearance</h2><span>Choose a color theme for this browser.</span></div><span className="table-label">SAVED LOCALLY</span></div>
-      <div className="theme-choice-list" role="radiogroup" aria-label="App theme">
-        {themes.map((option) => <button className={`theme-choice ${theme === option.id ? 'selected' : ''}`} type="button" role="radio" aria-checked={theme === option.id} key={option.id} onClick={() => onChange(option.id)}>
-          <span className="theme-swatches" aria-hidden="true">{option.swatches.map((color) => <i key={color} style={{ backgroundColor: color }} />)}</span>
-          <span className="theme-choice-copy"><strong>{option.name}</strong><small>{option.description}</small></span>
-          <span className="theme-radio" aria-hidden="true" />
-        </button>)}
+      <div className="section-toolbar"><div><h2>Appearance</h2><span>Choose a color theme for this browser.</span></div><button className="secondary-button" type="button" aria-controls="appearance-options" aria-expanded={appearanceExpanded} onClick={() => setAppearanceExpanded((expanded) => !expanded)}>{appearanceExpanded ? 'Hide options' : 'Show options'}</button></div>
+      <div id="appearance-options" hidden={!appearanceExpanded}>
+        <div className="theme-choice-list" role="radiogroup" aria-label="App theme">
+          {themes.map((option) => <button className={`theme-choice ${theme === option.id ? 'selected' : ''}`} type="button" role="radio" aria-checked={theme === option.id} key={option.id} onClick={() => onChange(option.id)}>
+            <span className="theme-swatches" aria-hidden="true">{option.swatches.map((color) => <i key={color} style={{ backgroundColor: color }} />)}</span>
+            <span className="theme-choice-copy"><strong>{option.name}</strong><small>{option.description}</small></span>
+            <span className="theme-radio" aria-hidden="true" />
+          </button>)}
+        </div>
+        <div className="table-note"><span>Your selection is saved in this browser.</span><span>Theme applies immediately.</span></div>
       </div>
-      <div className="table-note"><span>Your selection is saved in this browser.</span><span>Theme applies immediately.</span></div>
     </section>
     <section className="data-section settings-reset-section">
       <div className="section-toolbar"><div><h2>Factory reset</h2><span>Permanently clear personal operating data from this browser.</span></div><span className="table-label">DESTRUCTIVE ACTION</span></div>
       <div className="settings-reset-row"><div><strong>Reset local data</strong><span>Deletes ships and cargo, crew and roles, bank accounts, ledger history, and saved route plans. Your UEX token and theme are kept.</span></div><button className="danger-button" type="button" onClick={() => setResetOpen(true)}>Factory reset</button></div>
     </section>
+    {import.meta.env.DEV && <section className="data-section settings-reset-section">
+      <div className="section-toolbar"><div><h2>Development server</h2><span>Stopping it disconnects this app until the server is restarted.</span></div><button className="danger-button" type="button" onClick={() => setShutdownOpen(true)}>Shutdown server</button></div>
+    </section>}
     {resetOpen && <FactoryResetDialog onClose={() => setResetOpen(false)} onConfirm={() => { onFactoryReset(); setResetOpen(false) }} />}
+    {shutdownOpen && <ShutdownDevServerDialog onClose={() => setShutdownOpen(false)} onConfirm={() => { setShutdownOpen(false); void fetch('/__shutdown', { method: 'POST' }).catch(() => undefined) }} />}
   </>
+}
+
+function ShutdownDevServerDialog({ onClose, onConfirm }: { onClose: () => void; onConfirm: () => void }) {
+  return <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose() }}>
+    <section className="record-modal clear-ledger-modal" role="alertdialog" aria-modal="true" aria-labelledby="shutdown-server-title">
+      <div className="record-modal-head"><div><span className="eyebrow">DEVELOPMENT SERVER</span><h2 id="shutdown-server-title">Shut down the local server?</h2></div><button className="close-button" type="button" onClick={onClose} aria-label="Close confirmation">×</button></div>
+      <div className="clear-ledger-content"><p>This stops Vite and disconnects this app.</p><p>Restart it from the project terminal with <code>npm run dev</code>.</p></div>
+      <div className="record-actions"><button className="secondary-button" type="button" onClick={onClose}>Cancel</button><button className="danger-button" type="button" onClick={onConfirm}>Shutdown server</button></div>
+    </section>
+  </div>
 }
 
 function FactoryResetDialog({ onClose, onConfirm }: { onClose: () => void; onConfirm: () => void }) {
