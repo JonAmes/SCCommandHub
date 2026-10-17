@@ -1,9 +1,11 @@
 const path = require('node:path')
-const { app, BrowserWindow, desktopCapturer, dialog, ipcMain, session, shell } = require('electron')
+const { app, BrowserWindow, desktopCapturer, dialog, ipcMain, screen, session, shell } = require('electron')
 const { detectGameInstallations, normalizeGameRoot } = require('./gameDetection.cjs')
 const { startGameLogMonitor } = require('./gameLogMonitor.cjs')
 const { createSyncHost } = require('./syncServer.cjs')
 const { createTailscaleServe } = require('./tailscaleServe.cjs')
+const { describeScreenSources, selectedScreenSource } = require('./screenCapture.cjs')
+const { discoverTailscaleHosts, createHostAdvertisement } = require('./syncDiscovery.cjs')
 
 let gameLogMonitor
 let mainWindow
@@ -18,6 +20,8 @@ const syncHost = createSyncHost({
   },
 })
 const tailscaleServe = createTailscaleServe()
+const hostAdvertisement = createHostAdvertisement()
+let hostDiscoveryPromise
 
 function stopGameLogMonitor() {
   gameLogMonitor?.stop()
@@ -57,7 +61,7 @@ ipcMain.handle('star-citizen:stop-log', () => {
 ipcMain.handle('screen-reader:list-sources', async (event) => {
   if (event.senderFrame !== event.sender.mainFrame) return []
   const sources = await desktopCapturer.getSources({ types: ['screen', 'window'], thumbnailSize: { width: 0, height: 0 } })
-  return sources.map((source) => ({ id: source.id, name: source.name }))
+  return describeScreenSources(sources, screen.getPrimaryDisplay().id, mainWindow?.getMediaSourceId())
 })
 ipcMain.handle('screen-reader:select-source', (event, sourceId) => {
   if (event.senderFrame !== event.sender.mainFrame) return false
@@ -69,11 +73,18 @@ ipcMain.handle('sync:host-start', async () => {
   if (host.status !== 'listening') return host
   const served = tailscaleServe.start(host.port)
   if (served.status !== 'ready') {
+    hostAdvertisement.stop()
     tailscaleServe.stop()
     await syncHost.stop()
     return { status: served.status === 'tailscale-cli-not-found' || served.status === 'tailscale-dns-unavailable' ? served.status : 'serve-error', detail: served.detail }
   }
+  hostAdvertisement.start(served.url)
   return { ...host, address: served.url, publicUrl: served.url }
+})
+ipcMain.handle('sync:discover-hosts', async (event) => {
+  if (event.senderFrame !== event.sender.mainFrame) return { hosts: [], message: 'Host discovery is unavailable.' }
+  hostDiscoveryPromise ??= discoverTailscaleHosts().finally(() => { hostDiscoveryPromise = undefined })
+  return hostDiscoveryPromise
 })
 ipcMain.handle('sync:host-rotate-code', () => syncHost.isRunning() ? syncHost.rotatePairingCode() : null)
 ipcMain.handle('sync:publish-snapshot', (event, snapshot) => {
@@ -85,6 +96,7 @@ ipcMain.handle('sync:resolve-review', (event, clientId) => {
   return syncHost.resolveClientReview(clientId)
 })
 ipcMain.handle('sync:host-stop', async () => {
+  hostAdvertisement.stop()
   tailscaleServe.stop()
   return syncHost.stop()
 })
@@ -99,14 +111,14 @@ ipcMain.handle('sync:client-request', async (event, request) => {
   if (url.protocol !== 'https:' || !url.hostname.toLocaleLowerCase().endsWith('.ts.net') || url.username || url.password || url.search || url.hash) {
     return { status: 400, data: { error: 'invalid-sync-url' } }
   }
-  if (!['/pair', '/pair-status', '/sync', '/pull', '/status', '/disconnect'].includes(url.pathname.replace(/^\/sc-command-hub-sync/, ''))) {
+  if (!['/pair', '/pair-status', '/sync', '/pull', '/status', '/disconnect', '/discover'].includes(url.pathname.replace(/^\/sc-command-hub-sync/, ''))) {
     return { status: 404, data: { error: 'invalid-sync-path' } }
   }
   const body = JSON.stringify(request?.data ?? {})
   if (Buffer.byteLength(body, 'utf8') > 64 * 1024 * 1024) return { status: 413, data: { error: 'payload-too-large' } }
   const headers = { 'Content-Type': 'application/json' }
   if (typeof request?.token === 'string' && request.token.length < 512) headers.Authorization = `Bearer ${request.token}`
-  const response = await fetch(url, { method: 'POST', headers, body, redirect: 'error' })
+  const response = await fetch(url, { method: 'POST', headers, body, redirect: 'error', signal: AbortSignal.timeout(15000) })
   const data = await response.json().catch(() => null)
   return { status: response.status, data }
 })
@@ -142,9 +154,13 @@ function createWindow() {
 app.whenReady().then(() => {
   session.defaultSession.setDisplayMediaRequestHandler(async (request, callback) => {
     if (!mainWindow || request.frame !== mainWindow.webContents.mainFrame) return callback({})
-    const sources = await desktopCapturer.getSources({ types: ['screen', 'window'], thumbnailSize: { width: 0, height: 0 } })
-    const source = sources.find((item) => item.id === screenReaderSourceId) ?? sources.find((item) => item.id.startsWith('screen:'))
-    callback(source ? { video: source } : {})
+    try {
+      const sources = await desktopCapturer.getSources({ types: ['screen', 'window'], thumbnailSize: { width: 0, height: 0 } })
+      const source = selectedScreenSource(sources, screenReaderSourceId)
+      callback(source ? { video: source } : {})
+    } catch {
+      callback({})
+    }
   })
   createWindow()
 
@@ -155,6 +171,7 @@ app.whenReady().then(() => {
 
 app.on('window-all-closed', () => {
   stopGameLogMonitor()
+  hostAdvertisement.stop()
   tailscaleServe.stop()
   void syncHost.stop()
   mainWindow = undefined
@@ -163,6 +180,7 @@ app.on('window-all-closed', () => {
 
 app.on('before-quit', () => {
   stopGameLogMonitor()
+  hostAdvertisement.stop()
   tailscaleServe.stop()
   void syncHost.stop()
 })

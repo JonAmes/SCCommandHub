@@ -1,0 +1,62 @@
+{
+  "minerals": ["Agricium (Ore)", "Aslarite (Raw)", "Titanium (Ore)", "Quartz (Raw)", "Beryl (Raw)", "Quantainium (Raw)", "Aluminum (Ore)", "Tungsten (Ore)", "Diamond (Raw)", "Lindinium (Ore)"],
+  "examples": [
+    {
+      "file": "Example1.avif", "width": 1506, "height": 933,
+      "regions": { "scan": { "x": 1090, "y": 170, "width": 370, "height": 580 }, "cargo": null },
+      "expected": { "scan": { "massKg": 458, "resistancePercent": 14, "instabilityPercent": 0.85, "composition": [
+        { "commodity": "Agricium (Ore)", "percent": 4.86 }, { "commodity": "Aslarite (Raw)", "percent": 2 },
+        { "commodity": "Titanium (Ore)", "percent": 10.11 }, { "commodity": "Titanium (Ore)", "percent": 53.53 },
+        { "commodity": "Inert Materials", "percent": 29.47 }
+      ] } }
+    },
+    {
+      "file": "Example2.avif", "width": 1562, "height": 993,
+      "notes": "The last decimal digit of the second titanium percentage is ambiguous in this compressed image; that percent is intentionally unscored.",
+      "regions": { "scan": { "x": 1105, "y": 445, "width": 165, "height": 230 }, "cargo": { "x": 1100, "y": 760, "width": 175, "height": 50 } },
+      "expected": { "scan": { "massKg": 4463, "resistancePercent": 23, "instabilityPercent": 12.41, "composition": [
+        { "commodity": "Agricium (Ore)", "percent": 4.95 }, { "commodity": "Aslarite (Raw)", "percent": 4.9 },
+        { "commodity": "Titanium (Ore)", "percent": 11.57 }, { "commodity": "Titanium (Ore)" },
+        { "commodity": "Inert Materials", "percent": 25.57 }
+      ] }, "cargo": { "items": [], "unmatched": [] } }
+    },
+    {
+      "file": "Example3.avif", "width": 1300, "height": 870,
+      "regions": { "scan": { "x": 1015, "y": 397, "width": 165, "height": 230 }, "cargo": { "x": 1010, "y": 713, "width": 175, "height": 115 } },
+      "expected": { "scan": { "massKg": 458, "resistancePercent": 20, "instabilityPercent": 0.7, "composition": [
+        { "commodity": "Agricium (Ore)", "percent": 4.86 }, { "commodity": "Aslarite (Raw)", "percent": 2 },
+        { "commodity": "Titanium (Ore)", "percent": 10.11 }, { "commodity": "Titanium (Ore)", "percent": 53.53 },
+        { "commodity": "Inert Materials", "percent": 29.47 }
+      ] }, "cargo": { "items": [{ "commodity": "Titanium (Ore)", "scu": 5.73 }, { "commodity": "Agricium (Ore)", "scu": 0.43 }], "unmatched": ["Inert Materials"] } }
+    },
+    {
+      "file": "Example4.png", "width": 2560, "height": 1440,
+      "notes": "Older HUD: resistance is displayed as 0.30 without a percent sign; preserve the displayed value, not an inferred unit conversion.",
+      "regions": { "scan": { "x": 1810, "y": 556, "width": 265, "height": 302 }, "cargo": { "x": 2085, "y": 554, "width": 275, "height": 185 } },
+      "expected": { "scan": { "massKg": 5273, "resistancePercent": 0.3, "instabilityPercent": 3.51, "composition": [
+        { "commodity": "Quartz (Raw)", "percent": 41.93 }, { "commodity": "Beryl (Raw)", "percent": 21.69 },
+        { "commodity": "Quantainium (Raw)", "percent": 1 }, { "commodity": "Inert Materials", "percent": 35.35 }
+      ] }, "cargo": { "items": [{ "commodity": "Quantainium (Raw)", "scu": 0.26 }, { "commodity": "Aluminum (Ore)", "scu": 0.01 }], "unmatched": ["Inert Materials"] } }
+    },
+    {
+      "file": "Example5.avif", "width": 2000, "height": 1000,
+      "notes": "Cargo is clipped and cannot be scored. Older HUD: resistance is displayed as 0.20 without a percent sign.",
+      "regions": { "scan": { "x": 1550, "y": 325, "width": 280, "height": 380 }, "cargo": null },
+      "expected": { "scan": { "massKg": 8450, "resistancePercent": 0.2, "instabilityPercent": 0.74, "composition": [
+        { "commodity": "Tungsten (Ore)", "percent": 5.6 }, { "commodity": "Diamond (Raw)", "percent": 2.51 },
+        { "commodity": "Aluminum (Ore)", "percent": 1.69 }, { "commodity": "Beryl (Raw)", "percent": 1.56 },
+        { "commodity": "Titanium (Ore)", "percent": 1.19 }, { "commodity": "Quartz (Raw)", "percent": 0.25 },
+        { "commodity": "Inert Materials", "percent": 87.17 }
+      ] } }
+    },
+    {
+      "file": "Example6.png", "width": 420, "height": 522,
+      "notes": "Instability 801.90 verified in an enlarged crop. Tungsten's leading dotted digit is ambiguous, so its percent is intentionally unscored.",
+      "regions": { "scan": { "x": 110, "y": 90, "width": 180, "height": 215 }, "cargo": { "x": 110, "y": 430, "width": 190, "height": 60 } },
+      "expected": { "scan": { "massKg": 52740, "resistancePercent": 75, "instabilityPercent": 801.9, "composition": [
+        { "commodity": "Lindinium (Ore)", "percent": 4.77 }, { "commodity": "Lindinium (Ore)", "percent": 75.82 },
+        { "commodity": "Tungsten (Ore)" }, { "commodity": "Inert Materials", "percent": 11.04 }
+      ] }, "cargo": { "items": [], "unmatched": [] } }
+    }
+  ]
+}

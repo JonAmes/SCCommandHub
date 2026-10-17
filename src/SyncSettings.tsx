@@ -1,6 +1,7 @@
-import { useState, type FormEvent } from 'react'
+import { useEffect, useRef, useState, type FormEvent } from 'react'
 import type { SyncMergePreview, SyncProposal } from './appSync'
 import type { SyncClientPairing } from './syncClient'
+import { discoverSyncHosts, type DiscoveredSyncHost } from './syncDiscovery'
 
 export type SyncHostInfo = { status: 'stopped' | 'listening' | 'tailscale-not-found' | 'tailscale-cli-not-found' | 'tailscale-dns-unavailable' | 'serve-error' | 'port-in-use' | 'start-error'; address?: string; publicUrl?: string; port?: number; code?: string; expiresAt?: string; detail?: string }
 export type SyncClientStatus = 'idle' | 'pairing' | 'paired' | 'syncing' | 'synced' | 'awaiting-review' | 'error'
@@ -62,12 +63,44 @@ export function SyncSettings({
   onSyncNow: () => void
 }) {
   const [hostUrl, setHostUrl] = useState('')
+  const [detectedHosts, setDetectedHosts] = useState<DiscoveredSyncHost[]>([])
+  const [selectedHost, setSelectedHost] = useState('')
+  const [manualHost, setManualHost] = useState(false)
+  const [discovering, setDiscovering] = useState(false)
+  const [discoveryMessage, setDiscoveryMessage] = useState('')
+  const discoveryRef = useRef<AbortController | null>(null)
   const [pairingCode, setPairingCode] = useState('')
   const [clientName, setClientName] = useState('SC Command Hub client')
 
+  useEffect(() => () => { discoveryRef.current?.abort() }, [])
+
+  async function detectHosts() {
+    if (discoveryRef.current) return
+    const controller = new AbortController()
+    discoveryRef.current = controller
+    setDiscovering(true)
+    setDiscoveryMessage('Looking for active hosts...')
+    try {
+      const result = await discoverSyncHosts(controller.signal)
+      if (controller.signal.aborted) return
+      setDetectedHosts(result.hosts)
+      setSelectedHost((current) => result.hosts.some((host) => host.url === current) ? current : result.hosts.length === 1 ? result.hosts[0].url : '')
+      setManualHost(result.hosts.length === 0)
+      setDiscoveryMessage(result.hosts.length ? `${result.hosts.length} ${result.hosts.length === 1 ? 'host found' : 'hosts found'}.` : result.message)
+    } catch {
+      if (!controller.signal.aborted) {
+        setManualHost(true)
+        setDiscoveryMessage('Host detection failed. Enter the host URL instead.')
+      }
+    } finally {
+      if (!controller.signal.aborted) setDiscovering(false)
+      if (discoveryRef.current === controller) discoveryRef.current = null
+    }
+  }
+
   function submitPairing(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
-    onConnectClient(hostUrl, pairingCode, clientName)
+    onConnectClient(manualHost ? hostUrl : selectedHost, pairingCode, clientName)
   }
 
   const hostStatus = hostInfo.status === 'listening'
@@ -114,10 +147,17 @@ export function SyncSettings({
       <div className="section-toolbar"><div><h2>Client</h2><span>Connect to a host desktop over Tailscale and stay in sync automatically.</span></div><span className="table-label">{clientStatusLabel}</span></div>
       <div className="sync-section-content">
         {clientPairing ? <div className="sync-host-controls"><div><strong className="sync-status-copy">Connected to host {clientPairing.primaryUrl}</strong><small className="sync-last-upload">{clientDetail}</small></div><div className="sync-action-row"><button className="secondary-button" type="button" disabled={clientStatus === 'syncing'} onClick={onSyncNow}>Sync now</button><button className="danger-button" type="button" onClick={onDisconnectClient}>Disconnect</button></div></div> : <form className="sync-client-form" onSubmit={submitPairing}>
-          <label><span>HOST TAILSCALE HTTPS URL</span><input value={hostUrl} onChange={(event) => setHostUrl(event.target.value)} placeholder="https://host.tailnet.ts.net:8443/sc-command-hub-sync" required /></label>
+          <div className="sync-host-discovery">
+            <button className="secondary-button" type="button" disabled={discovering || clientStatus === 'pairing'} onClick={() => { void detectHosts() }}>{discovering ? 'Detecting hosts...' : 'Auto detect hosts'}</button>
+            <label className="sync-manual-host"><input type="checkbox" checked={manualHost} disabled={discovering || clientStatus === 'pairing'} onChange={(event) => setManualHost(event.target.checked)} /><span>Enter URL manually</span></label>
+            {discoveryMessage && <span className="sync-discovery-status" role="status">{discoveryMessage}</span>}
+          </div>
+          {manualHost
+            ? <label><span>HOST TAILSCALE HTTPS URL</span><input value={hostUrl} onChange={(event) => setHostUrl(event.target.value)} placeholder="https://host.tailnet.ts.net:8443/sc-command-hub-sync" required /></label>
+            : <label><span>DETECTED HOST</span><select value={selectedHost} onChange={(event) => setSelectedHost(event.target.value)} required disabled={discovering || clientStatus === 'pairing'}><option value="">Select a host</option>{detectedHosts.map((host) => <option key={host.url} value={host.url}>{host.name} ({new URL(host.url).hostname})</option>)}</select></label>}
           <label><span>DEVICE NAME</span><input value={clientName} onChange={(event) => setClientName(event.target.value)} maxLength={80} required /></label>
           <label><span>PAIRING CODE</span><input value={pairingCode} onChange={(event) => setPairingCode(event.target.value)} placeholder="6 digits" inputMode="numeric" maxLength={6} required /></label>
-          <button className="primary-button" type="submit" disabled={clientStatus === 'pairing'}>{clientStatus === 'pairing' ? 'Waiting for approval…' : 'Request pairing'}</button>
+          <button className="primary-button" type="submit" disabled={discovering || clientStatus === 'pairing'}>{clientStatus === 'pairing' ? 'Waiting for approval…' : 'Request pairing'}</button>
         </form>}
         {error && <div className="form-error sync-error" role="alert">{error}</div>}
         <div className="table-note"><span>Pairing replaces this device's data with the host's; changes made here are sent to the host for review.</span><span>UEX tokens, theme, and game paths stay on each device.</span></div>

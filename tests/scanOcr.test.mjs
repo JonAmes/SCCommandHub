@@ -1,9 +1,57 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { isCompleteScan, parseCargoText, parseScanText, primaryMineral } from '../src/scanOcr.ts'
+import { agreeCaptureReadings, isCompleteScan, parseCargoText, parseScanText, primaryMineral } from '../src/scanOcr.ts'
 
 const minerals = ['Beryl', 'Titanium', 'Aslarite']
 const cargoMinerals = ['Beryl (Raw)', 'Titanium (Ore)', 'Quantainium (Raw)']
+
+test('three-frame agreement preserves zeros, duplicate minerals and uncertainty', () => {
+  const scan = { massKg: 458, resistancePercent: 0, instabilityPercent: 0, composition: [{ commodity: 'Beryl', percent: 40 }, { commodity: 'Beryl', percent: 60 }] }
+  const readings = [{ parsed: scan, warnings: ['Low OCR confidence'] }, { parsed: { ...scan, composition: [...scan.composition].reverse() }, warnings: [] }, { parsed: { ...scan, massKg: 999 }, warnings: [] }]
+  const result = agreeCaptureReadings(readings)
+  assert.deepEqual(result.parsed, scan)
+  assert.ok(result.warnings.includes('Low OCR confidence'))
+  assert.ok(result.warnings.some((warning) => warning.includes('One scan differed')))
+  assert.equal(agreeCaptureReadings(readings.slice(0, 2)).parsed, undefined)
+})
+
+test('never combines different rocks or averages disagreement', () => {
+  const scan = { massKg: 458, resistancePercent: 20, instabilityPercent: 1, composition: [{ commodity: 'Beryl', percent: 100 }] }
+  const readings = [0, 1, 2].map((offset) => ({ parsed: { ...scan, massKg: 458 + offset }, warnings: [] }))
+  assert.equal(agreeCaptureReadings(readings).parsed, undefined)
+  const stable = [10, 20, 30].map((resistancePercent) => ({ parsed: { ...scan, resistancePercent }, warnings: [] }))
+  assert.equal(agreeCaptureReadings(stable).parsed.resistancePercent, undefined)
+  assert.ok(agreeCaptureReadings(stable).warnings.some((warning) => warning.includes('Resistance')))
+})
+
+test('cargo agreement compares canonical totals including unknown materials', () => {
+  const cargo = { items: [{ commodity: 'Beryl', scu: 2 }, { commodity: 'Titanium', scu: 1 }], unmatched: ['Inert Materials'] }
+  const readings = [{ cargo, warnings: [] }, { cargo: { ...cargo, items: [...cargo.items].reverse() }, warnings: [] }, { cargo: { items: [], unmatched: [] }, warnings: [] }]
+  assert.deepEqual(agreeCaptureReadings(readings).cargo, cargo)
+  assert.deepEqual(agreeCaptureReadings(Array.from({ length: 3 }, () => ({ cargo: { items: [], unmatched: [] }, warnings: [] }))).cargo.items, [])
+})
+
+test('never reads letters inside a field label as a missing numeric value', () => {
+  for (const text of ['INSTABILITY: :65', 'INSTABILITY: Y24)', 'RESISTANCE: unreadable', 'INSTABILITY', 'INSTABN IY: 6).980']) {
+    const parsed = parseScanText(text)
+    assert.equal(parsed.instabilityPercent, undefined, text)
+    assert.equal(parsed.resistancePercent, undefined, text)
+  }
+  assert.equal(parseScanText('INSTABILITY: .78').instabilityPercent, 0.78)
+  assert.equal(parseScanText('RESISTANCE: 0.30').resistancePercent, 0.3)
+})
+
+test('matches older HUD raw prefixes and ore suffixes to current names', () => {
+  const parsed = parseScanText('21.69% RAW BERYL\n1.00% RAW QUANTAINIUM\n35.35% INERT MATERIALS', cargoMinerals)
+  assert.deepEqual(parsed.composition, [
+    { commodity: 'Beryl (Raw)', percent: 21.69 },
+    { commodity: 'Quantainium (Raw)', percent: 1 },
+    { commodity: 'Inert Materials', percent: 35.35 },
+  ])
+  assert.deepEqual(parseCargoText('RAW QUANTAINIUM 0.26 SCU\nTITANIUM ORE 1.02 SCU', cargoMinerals).items, [
+    { commodity: 'Quantainium (Raw)', scu: 0.26 }, { commodity: 'Titanium (Ore)', scu: 1.02 },
+  ])
+})
 
 test('fixes misread mineral letters, S/5 and dotted-zero misreads from a real capture', () => {
   const parsed = parseScanText(`SCAN RESULTS

@@ -1,12 +1,15 @@
 import { useEffect, useEffectEvent, useRef, useState } from 'react'
+import { Capacitor } from '@capacitor/core'
 import type { NewRockScan, RockScan } from './miningOps'
-import { parseCargoText, parseScanText, primaryMineral, scanSignature, type CargoReading, type ParsedRockScan, type ScanRegion } from './scanOcr'
+import { captureScanRegion, captureScreenBurst, createScanWorker, recognizeScanRegion } from './scanRecognition'
+import { isCompleteScan, primaryMineral, scanSignature, type CargoReading, type ParsedRockScan, type ScanRegion } from './scanOcr'
 
 const locationKey = 'sc-command-hub.scan-reader-location-v1'
 const autoReadIntervalMs = 2500
 
 type OcrWorker = Awaited<ReturnType<typeof import('tesseract.js')['createWorker']>>
-type ScreenSource = { id: string; name: string }
+type ScreenSource = { id: string; name: string; kind: 'screen' | 'window'; isPrimary?: boolean; isGame?: boolean }
+type ImageSourceMode = 'primary' | 'apps' | 'game'
 type RegionTarget = 'scan' | 'cargo'
 
 const regionKeys: Record<RegionTarget, string> = {
@@ -20,7 +23,7 @@ function loadRegion(target: RegionTarget): ScanRegion | null {
     const value: unknown = JSON.parse(window.localStorage.getItem(regionKeys[target]) ?? 'null')
     if (!value || typeof value !== 'object') return null
     const region = value as ScanRegion
-    return [region.x, region.y, region.width, region.height].every((part) => Number.isFinite(part) && part >= 0 && part <= 1) && region.width > 0 && region.height > 0 ? region : null
+    return [region.x, region.y, region.width, region.height].every((part) => Number.isFinite(part) && part >= 0 && part <= 1) && region.width > 0 && region.height > 0 && region.x + region.width <= 1 && region.y + region.height <= 1 ? region : null
   } catch {
     return null
   }
@@ -69,6 +72,9 @@ export function ScanScreenReader({ scans, minerals, activeShipName, onAdd, onSyn
 }) {
   const [sourceKind, setSourceKind] = useState<'none' | 'screen' | 'image'>('none')
   const [imageUrl, setImageUrl] = useState('')
+  const [imageSourceMode, setImageSourceMode] = useState<ImageSourceMode>('primary')
+  const [sourceReady, setSourceReady] = useState(false)
+  const [sourceRatio, setSourceRatio] = useState(16 / 9)
   const [regions, setRegions] = useState<Record<RegionTarget, ScanRegion | null>>(() => ({ scan: loadRegion('scan'), cargo: loadRegion('cargo') }))
   const [target, setTarget] = useState<RegionTarget>('scan')
   const [draft, setDraft] = useState<ScanRegion | null>(null)
@@ -82,77 +88,213 @@ export function ScanScreenReader({ scans, minerals, activeShipName, onAdd, onSyn
   const [cargoUnmatched, setCargoUnmatched] = useState<string[]>([])
   const [cargoDirty, setCargoDirty] = useState(false)
   const [rawText, setRawText] = useState('')
+  const [readWarnings, setReadWarnings] = useState<string[]>([])
   const [sources, setSources] = useState<ScreenSource[]>([])
-  const [sourceId, setSourceId] = useState('')
+  const [appSourceId, setAppSourceId] = useState('')
   const videoRef = useRef<HTMLVideoElement>(null)
   const imageRef = useRef<HTMLImageElement>(null)
   const streamRef = useRef<MediaStream | null>(null)
   const workerRef = useRef<Promise<OcrWorker> | null>(null)
   const dragStartRef = useRef<{ x: number; y: number } | null>(null)
   const busyRef = useRef(false)
+  const revisionRef = useRef(0)
+  const burstRef = useRef<AbortController | null>(null)
+  const pendingBurstRef = useRef(false)
   const pendingScanRef = useRef('')
   const filledScanRef = useRef('')
   const pendingCargoRef = useRef('')
   const filledCargoRef = useRef('')
   const screenCaptureSupported = typeof navigator !== 'undefined' && Boolean(navigator.mediaDevices?.getDisplayMedia)
+  const desktopSourcesSupported = Boolean(window.starCitizenBridge?.listScreenSources)
+  const mobileDeviceDetected = ['android', 'ios'].includes(Capacitor.getPlatform()) || typeof navigator !== 'undefined' && (
+    /Android|iPhone|iPad|iPod/i.test(navigator.userAgent) || /Macintosh/i.test(navigator.userAgent) && navigator.maxTouchPoints > 1
+  )
 
   useEffect(() => {
     const bridge = window.starCitizenBridge
     if (!bridge?.listScreenSources) return
-    bridge.listScreenSources().then(setSources).catch(() => setSources([]))
+    bridge.listScreenSources().then(setSources).catch(() => setStatus('Capture sources could not be listed. Try opening the app selector again.'))
   }, [])
+
+  async function refreshSources() {
+    const available = await window.starCitizenBridge?.listScreenSources?.() ?? []
+    setSources(available)
+    setAppSourceId((current) => available.some((source) => source.kind === 'window' && source.id === current) ? current : '')
+    return available
+  }
 
   useEffect(() => () => {
+    revisionRef.current += 1
+    burstRef.current?.abort()
     streamRef.current?.getTracks().forEach((track) => track.stop())
-    void workerRef.current?.then((worker) => worker.terminate())
+    void workerRef.current?.then((worker) => worker.terminate()).catch(() => undefined)
   }, [])
 
-  useEffect(() => () => { if (imageUrl) URL.revokeObjectURL(imageUrl) }, [imageUrl])
+  useEffect(() => () => { if (imageUrl.startsWith('blob:')) URL.revokeObjectURL(imageUrl) }, [imageUrl])
 
   function stopScreen() {
+    revisionRef.current += 1
+    burstRef.current?.abort()
+    pendingBurstRef.current = false
     streamRef.current?.getTracks().forEach((track) => track.stop())
     streamRef.current = null
     setAuto(false)
+    setSourceReady(false)
+    dragStartRef.current = null
+    setDraft(null)
+    pendingScanRef.current = ''
+    pendingCargoRef.current = ''
+    filledScanRef.current = ''
+    filledCargoRef.current = ''
   }
 
   async function startScreen() {
+    if (busyRef.current) return
+    busyRef.current = true
+    setBusy(true)
+    const revision = revisionRef.current
     try {
-      await window.starCitizenBridge?.selectScreenSource?.(sourceId || null)
+      const bridge = window.starCitizenBridge
+      if (bridge?.listScreenSources) {
+        const available = await refreshSources()
+        if (revision !== revisionRef.current) return
+        const candidates = available.filter((source) => imageSourceMode === 'primary'
+          ? source.kind === 'screen' && source.isPrimary
+          : imageSourceMode === 'game' ? source.kind === 'window' && source.isGame : source.kind === 'window' && source.id === appSourceId)
+        if (candidates.length !== 1) {
+          setStatus(imageSourceMode === 'primary' ? 'The primary screen is unavailable. Select another image source.' : imageSourceMode === 'game' ? 'Star Citizen was not found unambiguously. Select another image source.' : 'Choose an available app window, then click Capture screen.')
+          return
+        }
+        if (!await bridge.selectScreenSource?.(candidates[0].id)) throw new Error('Capture source is unavailable')
+      } else setStatus('Choose the desired screen or window in the browser sharing picker.')
       const stream = await navigator.mediaDevices.getDisplayMedia({ video: { frameRate: 5 }, audio: false })
+      if (revision !== revisionRef.current) {
+        stream.getTracks().forEach((track) => track.stop())
+        return
+      }
       stopScreen()
+      if (!scanDirty) discardScan()
+      if (!cargoDirty) discardCargo()
+      setRawText('')
+      setReadWarnings([])
       streamRef.current = stream
       stream.getVideoTracks()[0]?.addEventListener('ended', () => {
         stopScreen()
         setSourceKind('none')
       })
       setImageUrl('')
+      setRegions({ scan: null, cargo: null })
+      burstRef.current = new AbortController()
+      pendingBurstRef.current = true
+      setSourceReady(false)
       setSourceKind('screen')
-      setStatus('Screen capture active. Drag over the SCAN RESULTS panel to set the read area.')
+      setStatus('Waiting for the selected source...')
     } catch {
-      setStatus('Screen capture was cancelled or is unavailable.')
+      if (revision === revisionRef.current) setStatus('Screen capture was cancelled or is unavailable. Select an available source and try again.')
+    } finally {
+      busyRef.current = false
+      setBusy(false)
     }
   }
 
+  const beginCaptureBurst = useEffectEvent(async (video: HTMLVideoElement) => {
+    const controller = burstRef.current
+    if (!controller || controller.signal.aborted) return
+    const revision = revisionRef.current
+    busyRef.current = true
+    setBusy(true)
+    try {
+      const worker = await getWorker()
+      controller.signal.throwIfAborted()
+      const result = await captureScreenBurst(worker, video, minerals, {
+        signal: controller.signal,
+        onProgress: setStatus,
+        onRegions: setRegions,
+      })
+      if (revision !== revisionRef.current || controller.signal.aborted) return
+      setRawText(result.text)
+      setReadWarnings(result.warnings)
+      if (result.parsed && !scanDirty) fillScan(result.parsed)
+      if (result.cargo && !cargoDirty) fillCargo(result.cargo)
+      setStatus(scanDirty || cargoDirty ? 'Save or discard your edits before loading a new reading.' : result.parsed || result.cargo ? 'Three cropped captures compared. Review the agreed values, then save.' : 'No stable reading found. Adjust the areas and use Read now.')
+    } catch (error) {
+      if (revision === revisionRef.current && !controller.signal.aborted) setStatus(error instanceof Error ? error.message : 'Capture failed. Select an area manually and use Read now.')
+    } finally {
+      busyRef.current = false
+      setBusy(false)
+    }
+  })
+
   useEffect(() => {
     if (sourceKind !== 'screen' || !videoRef.current || !streamRef.current) return
-    videoRef.current.srcObject = streamRef.current
-    void videoRef.current.play().catch(() => undefined)
+    const video = videoRef.current
+    let width = video.videoWidth
+    let height = video.videoHeight
+    const resized = () => {
+      if (width && height && (video.videoWidth !== width || video.videoHeight !== height)) {
+        revisionRef.current += 1
+        burstRef.current?.abort()
+        setRegions({ scan: null, cargo: null })
+        setStatus('Capture dimensions changed. Select the areas manually or restart capture.')
+      }
+      width = video.videoWidth
+      height = video.videoHeight
+      if (width && height) setSourceRatio(width / height)
+    }
+    video.addEventListener('resize', resized)
+    video.srcObject = streamRef.current
+    void video.play().catch(() => undefined)
+    if (pendingBurstRef.current) {
+      pendingBurstRef.current = false
+      void beginCaptureBurst(videoRef.current)
+    }
+    return () => video.removeEventListener('resize', resized)
   }, [sourceKind])
+
+  const cameraInputRef = useRef<HTMLInputElement>(null)
+
+  async function takeCameraPicture() {
+    if (typeof window !== 'undefined' && (window as any).Capacitor?.Plugins?.TextScanner) {
+      try {
+        const res = await (window as any).Capacitor.Plugins.TextScanner.scanText()
+        if (res?.imageUrl) {
+          openImage(res.imageUrl)
+          if (res.text) {
+            setRawText(res.text)
+          }
+        }
+      } catch (err: any) {
+        if (err?.message && !err.message.includes('cancelled')) {
+          setStatus(`Camera error: ${err.message}`)
+        }
+      }
+    } else {
+      cameraInputRef.current?.click()
+    }
+  }
 
   function loadImage(file: File | undefined) {
     if (!file || !file.type.startsWith('image/')) return
+    setRegions({ scan: loadRegion('scan'), cargo: loadRegion('cargo') })
+    openImage(URL.createObjectURL(file))
+  }
+
+  function openImage(url: string) {
     stopScreen()
-    setImageUrl(URL.createObjectURL(file))
+    if (!scanDirty) discardScan()
+    if (!cargoDirty) discardCargo()
+    setSourceReady(false)
+    setRawText('')
+    setReadWarnings([])
+    pendingScanRef.current = ''
+    pendingCargoRef.current = ''
+    setImageUrl(url)
     setSourceKind('image')
     setStatus('Image loaded. Drag over the SCAN RESULTS panel to set the read area.')
   }
 
   function getWorker() {
-    workerRef.current ??= import('tesseract.js').then(async ({ createWorker, PSM }) => {
-      const worker = await createWorker('eng')
-      await worker.setParameters({ tessedit_pageseg_mode: PSM.SINGLE_BLOCK, preserve_interword_spaces: '1', tessedit_char_whitelist: 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.,:%()/- ' })
-      return worker
-    })
+    workerRef.current ??= createScanWorker()
     workerRef.current.catch(() => { workerRef.current = null })
     return workerRef.current
   }
@@ -164,44 +306,12 @@ export function ScanScreenReader({ scans, minerals, activeShipName, onAdd, onSyn
     const width = sourceKind === 'screen' ? video?.videoWidth ?? 0 : image?.naturalWidth ?? 0
     const height = sourceKind === 'screen' ? video?.videoHeight ?? 0 : image?.naturalHeight ?? 0
     if (!source || !width || !height) return null
-
-    const sx = Math.round(region.x * width)
-    const sy = Math.round(region.y * height)
-    const sw = Math.max(1, Math.round(region.width * width))
-    const sh = Math.max(1, Math.round(region.height * height))
-    const scale = Math.min(4, Math.max(1, 1200 / sw))
-    const canvas = document.createElement('canvas')
-    canvas.width = Math.round(sw * scale)
-    canvas.height = Math.round(sh * scale)
-    const context = canvas.getContext('2d', { willReadFrequently: true })
-    if (!context) return null
-    context.imageSmoothingQuality = 'high'
-    context.drawImage(source, sx, sy, sw, sh, 0, 0, canvas.width, canvas.height)
-
-    // HUD text is bright and colored on a dark background; OCR prefers crisp dark text on white.
-    const pixels = context.getImageData(0, 0, canvas.width, canvas.height)
-    const data = pixels.data
-    let darkest = 255
-    let brightest = 0
-    for (let index = 0; index < data.length; index += 4) {
-      const brightness = Math.max(data[index], data[index + 1], data[index + 2])
-      data[index] = brightness
-      darkest = Math.min(darkest, brightness)
-      brightest = Math.max(brightest, brightness)
-    }
-    const range = Math.max(1, brightest - darkest)
-    for (let index = 0; index < data.length; index += 4) {
-      const value = 255 - Math.round(((data[index] - darkest) / range) * 255)
-      data[index] = value
-      data[index + 1] = value
-      data[index + 2] = value
-    }
-    context.putImageData(pixels, 0, 0)
-    return canvas
+    return captureScanRegion(source, width, height, region)
   }
 
   async function readRegion() {
-    if (busyRef.current) return null
+    if (busyRef.current || !sourceReady) return null
+    const revision = revisionRef.current
     const scanCanvas = regions.scan ? captureRegion(regions.scan) : null
     const cargoCanvas = regions.cargo ? captureRegion(regions.cargo) : null
     if (!scanCanvas && !cargoCanvas) {
@@ -213,22 +323,31 @@ export function ScanScreenReader({ scans, minerals, activeShipName, onAdd, onSyn
     try {
       const worker = await getWorker()
       const texts: string[] = []
+      const warnings: string[] = []
+      let scanSafe = false
+      let cargoSafe = false
       let parsed: ParsedRockScan | undefined
       let cargo: CargoReading | undefined
       if (scanCanvas) {
-        const { data } = await worker.recognize(scanCanvas)
-        parsed = parseScanText(data.text, minerals)
-        texts.push(`--- SCAN RESULTS ---\n${data.text}`)
+        const reading = await recognizeScanRegion(worker, scanCanvas, 'scan', minerals)
+        parsed = reading.parsed
+        scanSafe = reading.warnings.length === 0
+        warnings.push(...reading.warnings)
+        texts.push(`--- SCAN RESULTS (${reading.passes} passes, ${reading.elapsedMs}ms) ---\n${reading.text}`)
       }
       if (cargoCanvas) {
-        const { data } = await worker.recognize(cargoCanvas)
-        cargo = parseCargoText(data.text, minerals)
-        texts.push(`--- CARGO ---\n${data.text}`)
+        const reading = await recognizeScanRegion(worker, cargoCanvas, 'cargo', minerals)
+        cargo = reading.cargo
+        cargoSafe = reading.warnings.length === 0
+        warnings.push(...reading.warnings)
+        texts.push(`--- CARGO (${reading.passes} passes, ${reading.elapsedMs}ms) ---\n${reading.text}`)
       }
+      if (revision !== revisionRef.current) return null
       setRawText(texts.join('\n'))
-      return { parsed, cargo }
+      setReadWarnings([...new Set(warnings)])
+      return { parsed, cargo, scanSafe, cargoSafe }
     } catch {
-      setStatus('Text recognition failed. Check your connection the first time OCR loads, then try again.')
+      if (revision === revisionRef.current) setStatus('Text recognition failed. Check your connection the first time OCR loads, then try again.')
       return null
     } finally {
       busyRef.current = false
@@ -250,6 +369,10 @@ export function ScanScreenReader({ scans, minerals, activeShipName, onAdd, onSyn
   }
 
   async function readNow() {
+    if (scanDirty || cargoDirty) {
+      setStatus('Save or discard your edits before reading again.')
+      return
+    }
     const read = await readRegion()
     if (read?.parsed) fillScan(read.parsed)
     if (read?.cargo) fillCargo(read.cargo)
@@ -257,6 +380,8 @@ export function ScanScreenReader({ scans, minerals, activeShipName, onAdd, onSyn
   }
 
   function updateScanForm(update: (form: ScanForm) => ScanForm) {
+    revisionRef.current += 1
+    burstRef.current?.abort()
     setScanForm((current) => current && update(current))
     setScanDirty(true)
   }
@@ -266,6 +391,8 @@ export function ScanScreenReader({ scans, minerals, activeShipName, onAdd, onSyn
   }
 
   function discardScan() {
+    revisionRef.current += 1
+    burstRef.current?.abort()
     setScanForm(null)
     setScanDirty(false)
   }
@@ -291,11 +418,15 @@ export function ScanScreenReader({ scans, minerals, activeShipName, onAdd, onSyn
   }
 
   function updateCargoRow(id: string, field: 'commodity' | 'scu', value: string) {
+    revisionRef.current += 1
+    burstRef.current?.abort()
     setCargoRows((rows) => rows && rows.map((row) => row.id === id ? { ...row, [field]: value } : row))
     setCargoDirty(true)
   }
 
   function discardCargo() {
+    revisionRef.current += 1
+    burstRef.current?.abort()
     setCargoRows(null)
     setCargoUnmatched([])
     setCargoDirty(false)
@@ -322,7 +453,8 @@ export function ScanScreenReader({ scans, minerals, activeShipName, onAdd, onSyn
   // Auto capture only fills the review forms; nothing is saved without a click.
   const autoTick = useEffectEvent(async () => {
     const read = await readRegion()
-    if (read?.parsed) {
+    if (!read) return
+    if (read.parsed && read.scanSafe && isCompleteScan(read.parsed)) {
       const signature = scanSignature(read.parsed)
       // Two matching reads in a row avoid filling from a half-rendered panel.
       if (signature === pendingScanRef.current && signature !== filledScanRef.current) {
@@ -330,15 +462,16 @@ export function ScanScreenReader({ scans, minerals, activeShipName, onAdd, onSyn
         else fillScan(read.parsed)
       }
       pendingScanRef.current = signature
-    }
-    if (read?.cargo?.items.length) {
+    } else pendingScanRef.current = ''
+    if (read.cargo?.items.length && read.cargoSafe) {
       const signature = cargoSignature(read.cargo)
       if (signature === pendingCargoRef.current && signature !== filledCargoRef.current) {
         if (cargoDirty) setStatus('A new cargo reading is ready. Update or discard your edits to load it.')
         else fillCargo(read.cargo)
       }
       pendingCargoRef.current = signature
-    }
+    } else pendingCargoRef.current = ''
+    if (!read.scanSafe && read.parsed || !read.cargoSafe && read.cargo) setStatus('Uncertain reading. Use Read now to review and correct the values.')
   })
 
   useEffect(() => {
@@ -364,12 +497,16 @@ export function ScanScreenReader({ scans, minerals, activeShipName, onAdd, onSyn
     if (!start) return
     const next = normalizeRegion(start, pointerPosition(event))
     if (next.width < 0.01 || next.height < 0.01) return
+    revisionRef.current += 1
+    burstRef.current?.abort()
     setRegions((current) => ({ ...current, [target]: next }))
     try { window.localStorage.setItem(regionKeys[target], JSON.stringify(next)) } catch { /* region stays for this session */ }
     setStatus(`${regionLabels[target]} area saved. Use Read now or enable auto capture.`)
   }
 
   function clearRegion() {
+    revisionRef.current += 1
+    burstRef.current?.abort()
     setRegions((current) => ({ ...current, [target]: null }))
     try { window.localStorage.removeItem(regionKeys[target]) } catch { /* nothing stored */ }
     if (target === 'cargo') discardCargo()
@@ -389,11 +526,14 @@ export function ScanScreenReader({ scans, minerals, activeShipName, onAdd, onSyn
     <div className="section-toolbar"><div><h2>Scan screen reader</h2><span>Read the in-game SCAN RESULTS and CARGO panels to log scans and update your active ship's ore.</span></div><span className="table-label">{auto ? 'AUTO CAPTURE' : sourceKind === 'screen' ? 'SCREEN LIVE' : sourceKind === 'image' ? 'IMAGE' : 'OCR'}</span></div>
     <div className="mining-scan-form scan-reader-controls">
       <label><span>LOCATION FOR SAVED SCANS</span><input value={location} onChange={(event) => updateLocation(event.target.value)} placeholder="System, belt, or site" maxLength={100} /></label>
-      {sources.length > 0 && <label><span>CAPTURE SOURCE</span><select value={sourceId} onChange={(event) => setSourceId(event.target.value)}><option value="">Primary screen</option>{sources.map((source) => <option key={source.id} value={source.id}>{source.name}</option>)}</select></label>}
+      <label><span>IMAGE SOURCE</span><select value={imageSourceMode} disabled={!screenCaptureSupported || busy || sourceKind === 'screen'} onChange={(event) => setImageSourceMode(event.target.value as ImageSourceMode)}><option value="primary">Primary screen</option><option value="apps" disabled={!desktopSourcesSupported}>Running apps</option><option value="game">Star Citizen</option></select></label>
+      {imageSourceMode === 'apps' && <label><span>APP WINDOW</span><select value={appSourceId} disabled={!desktopSourcesSupported || busy || sourceKind === 'screen'} onFocus={() => { void refreshSources().catch(() => setStatus('App windows could not be refreshed. Try again.')) }} onChange={(event) => setAppSourceId(event.target.value)}><option value="">Choose an app window</option>{sources.filter((source) => source.kind === 'window').map((source) => <option key={source.id} value={source.id}>{source.name}</option>)}</select></label>}
       <div className="scan-reader-buttons">
         {screenCaptureSupported && (sourceKind === 'screen'
           ? <button className="secondary-button" type="button" onClick={() => { stopScreen(); setSourceKind('none') }}>Stop capture</button>
-          : <button className="secondary-button" type="button" onClick={() => { void startScreen() }}>Capture screen</button>)}
+          : <button className="secondary-button" type="button" disabled={busy} onClick={() => { void startScreen() }}>Capture screen</button>)}
+        {mobileDeviceDetected && <button className="secondary-button" type="button" onClick={() => { void takeCameraPicture() }}>Take picture</button>}
+        <input ref={cameraInputRef} type="file" accept="image/*" capture="environment" style={{ display: 'none' }} onChange={(event) => { loadImage(event.target.files?.[0]); event.target.value = '' }} />
         <label className="secondary-button scan-reader-file">Load screenshot<input type="file" accept="image/*" onChange={(event) => { loadImage(event.target.files?.[0]); event.target.value = '' }} /></label>
       </div>
     </div>
@@ -406,8 +546,8 @@ export function ScanScreenReader({ scans, minerals, activeShipName, onAdd, onSyn
       </div>
       <button className="text-button" type="button" disabled={!regions[target]} onClick={clearRegion}>Clear area</button>
     </div>}
-    {sourceKind !== 'none' && <div className="scan-reader-preview">
-      {sourceKind === 'screen' ? <video ref={videoRef} muted playsInline /> : <img ref={imageRef} src={imageUrl} alt="Scan source" />}
+    {sourceKind !== 'none' && <div className="scan-reader-preview" style={{ width: `min(calc(100% - 28px), ${70 * sourceRatio}vh)` }}>
+      {sourceKind === 'screen' ? <video ref={videoRef} muted playsInline onLoadedMetadata={(event) => { setSourceRatio(event.currentTarget.videoWidth / event.currentTarget.videoHeight); setSourceReady(true) }} /> : <img key={imageUrl} ref={imageRef} src={imageUrl} alt="Scan source" onLoad={(event) => { setSourceRatio(event.currentTarget.naturalWidth / event.currentTarget.naturalHeight); setSourceReady(true) }} onError={() => { setSourceReady(false); setStatus('This image could not be decoded. Try a PNG or JPEG screenshot.') }} />}
       <div
         className="scan-reader-overlay"
         onPointerDown={(event) => { event.currentTarget.setPointerCapture(event.pointerId); dragStartRef.current = pointerPosition(event); setDraft(null) }}
@@ -422,10 +562,11 @@ export function ScanScreenReader({ scans, minerals, activeShipName, onAdd, onSyn
       </div>
     </div>}
     <div className="scan-reader-actions">
-      <button className="secondary-button" type="button" disabled={sourceKind === 'none' || !anyRegion || busy} onClick={() => { void readNow() }}>{busy ? 'Reading…' : 'Read now'}</button>
+      <button className="secondary-button" type="button" disabled={sourceKind === 'none' || !sourceReady || !anyRegion || busy} onClick={() => { void readNow() }}>{busy ? 'Reading…' : 'Read now'}</button>
       <label className="scan-reader-auto"><input type="checkbox" checked={auto} disabled={sourceKind !== 'screen' || !anyRegion} onChange={(event) => setAuto(event.target.checked)} /><span>Auto fill every {autoReadIntervalMs / 1000}s</span></label>
       {status && <span className="scan-reader-status" role="status">{status}</span>}
     </div>
+    {readWarnings.length > 0 && <div className="scan-reader-warnings" role="status">{readWarnings.map((warning) => <p key={warning}>{warning}</p>)}</div>}
     <datalist id="scan-reader-minerals">{minerals.map((mineral) => <option key={mineral} value={mineral} />)}<option value="Inert Materials" /></datalist>
     {scanForm && <form className="mining-scan-form scan-reader-review" onSubmit={(event) => { event.preventDefault(); saveScan() }}>
       <div className="scan-reader-review-head"><strong>Review scan</strong><span>{scanDirty ? 'EDITED' : 'READ FROM SCREEN'}</span></div>
@@ -445,11 +586,11 @@ export function ScanScreenReader({ scans, minerals, activeShipName, onAdd, onSyn
     {cargoRows && <form className="mining-scan-form scan-reader-review" onSubmit={(event) => { event.preventDefault(); applyCargo() }}>
       <div className="scan-reader-review-head"><strong>Review cargo</strong><span>{cargoDirty ? 'EDITED' : 'READ FROM SCREEN'}</span></div>
       <div className="mining-scan-composition">
-        <div className="mining-scan-composition-head"><div><span>CARGO ORE</span><small>{cargoUnmatched.length ? `Not matched to UEX: ${cargoUnmatched.join(', ')}` : 'Amounts replace this ore on the active ship.'}</small></div><button className="text-button" type="button" onClick={() => { setCargoRows((rows) => [...(rows ?? []), { id: rowId(), commodity: '', scu: '' }]); setCargoDirty(true) }}>+ Add ore</button></div>
+        <div className="mining-scan-composition-head"><div><span>CARGO ORE</span><small>{cargoUnmatched.length ? `Not matched to UEX: ${cargoUnmatched.join(', ')}` : 'Amounts replace this ore on the active ship.'}</small></div><button className="text-button" type="button" onClick={() => { revisionRef.current += 1; setCargoRows((rows) => [...(rows ?? []), { id: rowId(), commodity: '', scu: '' }]); setCargoDirty(true) }}>+ Add ore</button></div>
         {cargoRows.map((row) => <div className="mining-scan-composition-row" key={row.id}>
           <input aria-label="Ore" list="scan-reader-minerals" value={row.commodity} onChange={(event) => updateCargoRow(row.id, 'commodity', event.target.value)} placeholder="Ore" />
           <div className="number-input"><input aria-label="Ore amount" type="number" min="0" step="0.01" value={row.scu} onChange={(event) => updateCargoRow(row.id, 'scu', event.target.value)} /><span>SCU</span></div>
-          <button className="remove-account" type="button" aria-label="Remove ore row" onClick={() => { setCargoRows((rows) => rows && rows.filter((item) => item.id !== row.id)); setCargoDirty(true) }}>×</button>
+          <button className="remove-account" type="button" aria-label="Remove ore row" onClick={() => { revisionRef.current += 1; setCargoRows((rows) => rows && rows.filter((item) => item.id !== row.id)); setCargoDirty(true) }}>×</button>
         </div>)}
         {!cargoRows.length && <small className="scan-reader-empty">No ores read. Add them manually or adjust the cargo area.</small>}
       </div>
@@ -458,6 +599,6 @@ export function ScanScreenReader({ scans, minerals, activeShipName, onAdd, onSyn
     {rawText && <div className="scan-reader-result">
       <details><summary>Recognized text</summary><pre>{rawText}</pre></details>
     </div>}
-    <div className="table-note"><span>Capture stays on this device. Only the selected area is read.</span><span>OCR language data downloads on first use.</span></div>
+    <div className="table-note"><span>Capture stays on this device. {sourceKind === 'screen' ? 'Panel discovery reads the full frame; subsequent readings use selected areas.' : 'Only the selected area is read.'}</span><span>OCR language data downloads on first use.</span></div>
   </section>
 }

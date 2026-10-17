@@ -1,13 +1,15 @@
 {
   "name": "sc-command-hub",
   "private": true,
-  "version": "1.0.5",
+  "version": "1.0.6",
   "type": "module",
   "main": "electron/main.cjs",
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
     "lint": "oxlint",
+    "test:ocr": "node --experimental-strip-types --test tests/scanOcr.test.mjs",
+    "test:ocr:images": "node --test tests/scanRecognition.test.mjs",
     "preview": "vite preview",
     "postinstall": "install-electron",
     "desktop:dev": "concurrently -k \"vite --host 127.0.0.1 --strictPort\" \"wait-on http://127.0.0.1:5173 && electron .\"",
@@ -24,12 +26,15 @@
     "@capacitor/filesystem": "^8.1.4",
     "@capacitor/ios": "^8.5.3",
     "@capacitor/share": "^8.0.3",
+    "bonjour-service": "^1.4.4",
+    "cordova-plugin-zeroconf": "^1.4.2",
     "react": "^19.2.8",
     "react-dom": "^19.2.8",
     "tesseract.js": "^7.0.0"
   },
   "devDependencies": {
     "@capacitor/cli": "^8.5.3",
+    "@tesseract.js-data/eng": "1.0.0",
     "@types/node": "^24.13.3",
     "@types/react": "^19.2.18",
     "@types/react-dom": "^19.2.7",
@@ -38,6 +43,7 @@
     "electron": "^44.7.2",
     "electron-builder": "^26.15.3",
     "oxlint": "^1.81.0",
+    "playwright": "^1.64.1",
     "typescript": "~6.0.2",
     "vite": "^8.3.0",
     "wait-on": "^9.5.1"

@@ -20,6 +20,10 @@ function mineralKey(value: string) {
   return value.toLocaleLowerCase().replace(/[^a-z]/g, '')
 }
 
+function mineralStem(value: string) {
+  return mineralKey(value).replace(/^raw/, '').replace(/(raw|ore)$/, '')
+}
+
 function titleCase(value: string) {
   return value.toLocaleLowerCase().replace(/(^|[\s(])([a-z])/g, (_match, prefix: string, letter: string) => `${prefix}${letter.toLocaleUpperCase()}`)
 }
@@ -38,13 +42,13 @@ function editDistance(left: string, right: string) {
 
 export function matchMineralName(ocrName: string, knownMinerals: string[]) {
   const key = mineralKey(ocrName)
-  const stripped = key.replace(/(raw|ore)$/, '')
+  const stripped = mineralStem(ocrName)
   const exact = knownMinerals.find((mineral) => mineralKey(mineral) === key)
-    ?? knownMinerals.find((mineral) => mineralKey(mineral).replace(/(raw|ore)$/, '') === stripped)
+    ?? knownMinerals.find((mineral) => mineralStem(mineral) === stripped)
   if (exact || stripped.length < 4) return exact
   // Allow roughly one misread letter per five so "ASRICIUM" still finds Agricium.
   const ranked = knownMinerals
-    .map((mineral) => ({ mineral, distance: editDistance(stripped, mineralKey(mineral).replace(/(raw|ore)$/, '')) }))
+    .map((mineral) => ({ mineral, distance: editDistance(stripped, mineralStem(mineral)) }))
     .sort((left, right) => left.distance - right.distance)
   const [best, runnerUp] = ranked
   if (!best || best.distance > Math.max(1, Math.floor(stripped.length / 5))) return undefined
@@ -89,13 +93,13 @@ export function parseScanText(text: string, knownMinerals: string[] = []): Parse
       if (value && value > 0) result.massKg = value
       continue
     }
-    const resistance = line.match(/RESIST\w*\s*[:;.]?\s*([\dOIl|]+(?:[.,]\d+)?)/)
+    const resistance = line.match(/\bRESIST[A-Z]*\b\s*[:;.]?\s*([\dOI|]+(?:[.,]\d+)?|[.,]\d+)(?![A-Z\d.,])/)
     if (resistance && result.resistancePercent === undefined) {
       const value = readNumberToken(resistance[1])
       if (value !== undefined && value >= 0 && value <= 100) result.resistancePercent = value
       continue
     }
-    const instability = line.match(/INSTAB\w*\s*[:;.]?\s*([\dOIl|]+(?:[.,]\d+)?)/)
+    const instability = line.match(/\bINSTAB[A-Z]*\b\s*[:;.]?\s*([\dOI|]+(?:[.,]\d+)?|[.,]\d+)(?![A-Z\d.,])/)
     if (instability && result.instabilityPercent === undefined) {
       const value = readNumberToken(instability[1])
       if (value !== undefined && value >= 0) result.instabilityPercent = value
@@ -155,4 +159,34 @@ export function scanSignature(scan: { massKg?: number; resistancePercent?: numbe
 export function primaryMineral(scan: ParsedRockScan) {
   const minerals = scan.composition.filter((part) => !/inert/i.test(part.commodity))
   return [...(minerals.length ? minerals : scan.composition)].sort((left, right) => right.percent - left.percent)[0]?.commodity ?? 'Rock'
+}
+
+export type BurstReading = { parsed?: ParsedRockScan; cargo?: CargoReading; warnings: string[] }
+
+export function agreeCaptureReadings(readings: BurstReading[]) {
+  const warnings = [...new Set(readings.flatMap((reading) => reading.warnings))]
+  let parsed: ParsedRockScan | undefined
+  let cargo: CargoReading | undefined
+  if (readings.length !== 3) return { parsed, cargo, warnings: [...warnings, 'Three fresh cropped readings are required.'] }
+  const scans = readings.flatMap((reading) => reading.parsed ? [reading.parsed] : [])
+  const compositionKey = (scan: ParsedRockScan) => scan.composition.map((part) => `${part.commodity}:${part.percent}`).sort().join('|')
+  const stable = scans.find((scan) => scan.massKg !== undefined && Number.isFinite(scan.massKg) && scan.massKg > 0 && scan.composition.length > 0 && scans.filter((other) => other.massKg === scan.massKg && compositionKey(other) === compositionKey(scan)).length >= 2)
+  if (stable) {
+    const matching = scans.filter((scan) => scan.massKg === stable.massKg && compositionKey(scan) === compositionKey(stable))
+    parsed = { composition: stable.composition.map((part) => ({ ...part })) }
+    for (const key of ['massKg', 'resistancePercent', 'instabilityPercent'] as const) {
+      const values = matching.map((scan) => scan[key]).filter((value): value is number => value !== undefined && Number.isFinite(value) && value >= 0 && (key !== 'resistancePercent' || value <= 100))
+      const value = values.find((candidate) => values.filter((other) => other === candidate).length >= 2)
+      if (value === undefined) warnings.push(`${key === 'massKg' ? 'Mass' : key === 'resistancePercent' ? 'Resistance' : 'Instability'} did not agree in two captures; enter it manually.`)
+      else parsed[key] = value
+    }
+    if (matching.length !== 3) warnings.push('One scan differed from the other two; verify the selected reading.')
+    if (!isCompleteScan(parsed)) warnings.push('The agreed scan is incomplete or invalid; review it manually.')
+  } else if (scans.length) warnings.push('The rock or its composition did not stay consistent across captures; use Read now or select the area manually.')
+  const cargoReadings = readings.flatMap((reading) => reading.cargo ? [reading.cargo] : [])
+  const cargoKey = (reading: CargoReading) => JSON.stringify([reading.items.map((item) => `${item.commodity}:${item.scu}`).sort(), [...reading.unmatched].sort()])
+  cargo = cargoReadings.find((reading) => cargoReadings.filter((other) => cargoKey(other) === cargoKey(reading)).length >= 2)
+  if (cargoReadings.length && !cargo) warnings.push('Cargo amounts did not agree in two captures; use Read now to review them.')
+  if (cargo && cargoReadings.some((reading) => cargoKey(reading) !== cargoKey(cargo!))) warnings.push('One cargo capture differed; verify the agreed amounts.')
+  return { parsed, cargo, warnings: [...new Set(warnings)] }
 }

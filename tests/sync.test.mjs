@@ -3,8 +3,180 @@ import test from 'node:test'
 import { previewSyncMerge, validateSyncSnapshot, persistSyncSnapshot } from '../src/appSync.ts'
 import { createSyncHost } from '../electron/syncServer.cjs'
 import { createTailscaleServe } from '../electron/tailscaleServe.cjs'
+import { tailnetCandidates, discoverTailscaleHosts, createHostAdvertisement, probeHost } from '../electron/syncDiscovery.cjs'
+import { discoverNativeSyncHosts, validatedDiscoveredHosts } from '../src/syncDiscovery.ts'
 
 const createdAt = '2026-10-15T12:00:00.000Z'
+
+test('discovery probes require the protocol marker and bound response size', async () => {
+  const candidate = { name: 'Host', url: 'https://host.tail.ts.net:8443/sc-command-hub-sync' }
+  assert.equal(await probeHost(candidate, async (_url, options) => {
+    assert.equal(options.redirect, 'error')
+    assert.equal(options.headers.Authorization, undefined)
+    return new Response(JSON.stringify({ service: 'sc-command-hub', protocolVersion: 1 }))
+  }), true)
+  assert.equal(await probeHost(candidate, async () => new Response('{}')), false)
+  assert.equal(await probeHost(candidate, async () => new Response('x'.repeat(4097))), false)
+  assert.equal(await probeHost(candidate, async () => { throw new Error('unreachable') }), false)
+})
+
+test('host discovery UI selects verified hosts and falls back to manual URLs', { timeout: 60_000 }, async () => {
+  const { chromium } = await import('playwright')
+  const { createServer } = await import('vite')
+  const { tmpdir } = await import('node:os')
+  const { join } = await import('node:path')
+  const server = await createServer({ server: { host: '127.0.0.1', port: 0 }, logLevel: 'error' })
+  let browser
+  try {
+    await server.listen()
+    const origin = `http://127.0.0.1:${server.httpServer.address().port}`
+    browser = await chromium.launch()
+    const page = await browser.newPage({ viewport: { width: 1440, height: 1000 } })
+    await page.route('**/*', (route) => route.request().url().startsWith(`${origin}/`) ? route.continue() : route.abort())
+    await page.addInitScript(() => {
+      localStorage.setItem('sc-command-hub.setup-profile-v1', JSON.stringify({ skipped: true, completedAt: new Date().toISOString() }))
+      window.discoveryTest = { mode: 'one', requests: [] }
+      window.starCitizenBridge = {
+        discoverSyncHosts: async () => {
+          const host = { name: 'Desktop A', url: 'https://desktop-a.tail.ts.net:8443/sc-command-hub-sync' }
+          if (window.discoveryTest.mode === 'error') throw new Error('Discovery failed')
+          if (window.discoveryTest.mode === 'none') return { hosts: [], message: 'No hosts found. Enter the host URL.' }
+          if (window.discoveryTest.mode === 'invalid') return { hosts: [{ name: 'Untrusted', url: 'http://untrusted.local' }], message: '' }
+          return { hosts: [host, ...(window.discoveryTest.mode === 'multiple' ? [{ name: 'Desktop B', url: 'https://desktop-b.tail.ts.net:8443/sc-command-hub-sync' }] : [])], message: '' }
+        },
+        requestSync: async (url, data) => {
+          window.discoveryTest.requests.push({ url, data })
+          return { status: 400, data: { error: 'test-pairing-request' } }
+        },
+      }
+    })
+    await page.goto(origin)
+    await page.getByRole('button', { name: 'Settings', exact: true }).click()
+    const detect = page.getByRole('button', { name: 'Auto detect hosts', exact: true })
+    await detect.click()
+    const selector = page.getByLabel(/^DETECTED HOST/)
+    await page.getByText('1 host found.', { exact: true }).waitFor()
+    assert.equal(await selector.inputValue(), 'https://desktop-a.tail.ts.net:8443/sc-command-hub-sync')
+    assert.equal(await page.getByLabel('HOST TAILSCALE HTTPS URL', { exact: true }).count(), 0)
+    assert.equal(await page.evaluate(() => window.discoveryTest.requests.length), 0, 'Discovery must not pair or send data automatically')
+    await page.getByLabel('PAIRING CODE', { exact: true }).fill('123456')
+    await page.getByRole('button', { name: 'Request pairing', exact: true }).click()
+    await page.getByText('test-pairing-request', { exact: true }).waitFor()
+    assert.equal(await page.evaluate(() => window.discoveryTest.requests[0].url), 'https://desktop-a.tail.ts.net:8443/sc-command-hub-sync/pair')
+    await page.evaluate(() => { window.discoveryTest.mode = 'multiple' })
+    await detect.click()
+    await page.getByText('2 hosts found.', { exact: true }).waitFor()
+    await selector.selectOption('https://desktop-b.tail.ts.net:8443/sc-command-hub-sync')
+    await page.getByRole('button', { name: 'Request pairing', exact: true }).click()
+    await page.waitForFunction(() => window.discoveryTest.requests.length === 2)
+    assert.equal(await page.evaluate(() => window.discoveryTest.requests[1].url), 'https://desktop-b.tail.ts.net:8443/sc-command-hub-sync/pair')
+    await page.evaluate(() => { window.discoveryTest.mode = 'none' })
+    await detect.click()
+    const manual = page.getByLabel('HOST TAILSCALE HTTPS URL', { exact: true })
+    await manual.waitFor()
+    await manual.fill('https://manual.tail.ts.net:8443/sc-command-hub-sync')
+    await page.getByRole('button', { name: 'Request pairing', exact: true }).click()
+    await page.waitForFunction(() => window.discoveryTest.requests.length === 3)
+    assert.equal(await page.evaluate(() => window.discoveryTest.requests[2].url), 'https://manual.tail.ts.net:8443/sc-command-hub-sync/pair')
+    for (const mode of ['error', 'invalid']) {
+      await page.evaluate((mode) => { window.discoveryTest.mode = mode }, mode)
+      await detect.click()
+      await manual.waitFor()
+      assert.equal(await manual.inputValue(), 'https://manual.tail.ts.net:8443/sc-command-hub-sync', 'A discovery failure must preserve manual input')
+    }
+    for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844 }]) {
+      await page.setViewportSize(viewport)
+      await page.locator('.app-sync-section').filter({ has: page.getByRole('heading', { name: 'Client', exact: true }) }).screenshot({ path: join(tmpdir(), `sc-host-discovery-${viewport.width}.png`) })
+    }
+  } finally {
+    await browser?.close()
+    await server.close()
+  }
+})
+
+test('mobile discovery validates advertisements, verifies hosts and stops browsing', async () => {
+  const url = 'https://host.tail.ts.net:8443/sc-command-hub-sync'
+  const verified = []
+  let stopped = 0
+  const plugin = { watch: (_type, _domain, success) => {
+    for (const candidate of [url, url, 'http://untrusted.local', 'https://host.tail.ts.net/incorrect']) success({ action: 'resolved', service: { name: 'Desktop', txtRecord: { version: '1', url: candidate } } })
+  }, unwatch: () => { stopped += 1 } }
+  const result = await discoverNativeSyncHosts(plugin, new AbortController().signal, { scanMs: 1, verify: async (host) => { verified.push(host.url); return true } })
+  assert.deepEqual(verified, [url])
+  assert.deepEqual(result.hosts, [{ name: 'Desktop', url }])
+  assert.equal(stopped, 1)
+  assert.deepEqual(validatedDiscoveredHosts([{ name: 'unsafe', url: 'https://user:password@host.tail.ts.net/sc-command-hub-sync' }]), [])
+})
+
+test('mobile discovery handles denied permission and cancellation with cleanup', async () => {
+  const denied = await discoverNativeSyncHosts({ watch: (_type, _domain, _success, failure) => failure(), unwatch() {} }, new AbortController().signal)
+  assert.deepEqual(denied.hosts, [])
+  assert.match(denied.message, /permission/)
+  const controller = new AbortController()
+  let stopped = false
+  const pending = discoverNativeSyncHosts({ watch() {}, unwatch() { stopped = true } }, controller.signal)
+  controller.abort()
+  await assert.rejects(pending, { name: 'AbortError' })
+  assert.equal(stopped, true)
+})
+
+test('discovers only verified Tailscale hosts with bounded probes and no credentials', async () => {
+  const status = { Self: { DNSName: 'self.tail.ts.net.' }, Peer: {
+    active: { DNSName: 'host.tail.ts.net.', HostName: 'Host', Online: true },
+    duplicate: { DNSName: 'host.tail.ts.net.' },
+    offline: { DNSName: 'offline.tail.ts.net.', Online: false },
+    invalid: { DNSName: 'host.tail.ts.net/evil' },
+  } }
+  assert.deepEqual(tailnetCandidates(status).map((host) => host.url), ['https://self.tail.ts.net:8443/sc-command-hub-sync', 'https://host.tail.ts.net:8443/sc-command-hub-sync'])
+  const result = await discoverTailscaleHosts({ getStatus: async () => status, probe: async (candidate) => candidate.name === 'Host' })
+  assert.deepEqual(result.hosts, [{ name: 'Host', url: 'https://host.tail.ts.net:8443/sc-command-hub-sync' }])
+  assert.deepEqual((await discoverTailscaleHosts({ getStatus: async () => { throw new Error('unavailable') } })).hosts, [])
+  let active = 0
+  let peak = 0
+  await discoverTailscaleHosts({ getStatus: async () => ({ Peer: Object.fromEntries(Array.from({ length: 100 }, (_, index) => [index, { DNSName: `host${index}.tail.ts.net` }])) }), probe: async () => {
+    active += 1
+    peak = Math.max(peak, active)
+    await Promise.resolve()
+    active -= 1
+    return false
+  } })
+  assert.ok(peak <= 4)
+  assert.equal(tailnetCandidates({ Peer: Object.fromEntries(Array.from({ length: 100 }, (_, index) => [index, { DNSName: `host${index}.tail.ts.net` }])) }).length, 32)
+})
+
+test('advertises only the host endpoint and stops local discovery when hosting ends', () => {
+  const published = []
+  let stopped = 0
+  let destroyed = 0
+  const advertisement = createHostAdvertisement({ name: 'Desktop', createBonjour: () => ({ publish: (options) => {
+    published.push(options)
+    return { on() {}, stop() { stopped += 1 } }
+  }, destroy() { destroyed += 1 } }) })
+  assert.equal(advertisement.start('https://host.tail.ts.net:8443/sc-command-hub-sync'), true)
+  assert.deepEqual(published[0].txt, { url: 'https://host.tail.ts.net:8443/sc-command-hub-sync', version: '1' })
+  assert.equal(published[0].type, 'sc-command-hub')
+  advertisement.stop()
+  advertisement.stop()
+  assert.equal(stopped, 1)
+  assert.equal(destroyed, 1)
+})
+
+test('discovery identifies an active host without revealing pairing or synchronized data', async () => {
+  const host = createSyncHost({ port: 0 })
+  try {
+    const listener = await host.start()
+    const base = `http://127.0.0.1:${listener.port}/sc-command-hub-sync`
+    const response = await fetch(`${base}/discover`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' })
+    assert.equal(response.status, 200)
+    assert.deepEqual(await response.json(), { service: 'sc-command-hub', protocolVersion: 1 })
+    assert.equal((await fetch(`${base}/discover`)).status, 405)
+    assert.equal((await fetch(`${base}/discover`, { method: 'POST', headers: { Origin: 'https://untrusted.example' }, body: '{}' })).status, 403)
+    assert.equal((await fetch(`${base}/status`, { method: 'POST', body: '{}' })).status, 401)
+    assert.equal((await fetch(`${base}/pull`, { method: 'POST', body: '{}' })).status, 401)
+  } finally {
+    await host.stop()
+  }
+})
 
 function createSnapshot(overrides = {}) {
   return {

@@ -11,7 +11,7 @@ export type SyncClientPairing = {
   expiresAt: string
 }
 
-function normalizePrimaryUrl(value: string) {
+export function normalizePrimaryUrl(value: string) {
   let url: URL
   try { url = new URL(value.trim()) } catch { throw new Error('Enter the host Tailscale HTTPS URL.') }
   if (url.protocol !== 'https:' || !url.hostname.toLocaleLowerCase().endsWith('.ts.net')) throw new Error('Use the host HTTPS MagicDNS address ending in .ts.net.')

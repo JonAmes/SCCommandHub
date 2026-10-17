@@ -63,6 +63,7 @@ declare global {
       onGameLogEvent?: (callback: (event: GameLogEvent) => void) => () => void
       onGameLogStatus?: (callback: (status: GameLogStatus) => void) => () => void
       startSyncHost?: () => Promise<SyncHostInfo>
+      discoverSyncHosts?: () => Promise<{ hosts: { name: string; url: string }[]; message: string }>
       rotateSyncPairingCode?: () => Promise<{ code: string; expiresAt: string } | null>
       publishSyncSnapshot?: (snapshot: SyncSnapshot) => Promise<boolean>
       resolveSyncReview?: (clientId: string) => Promise<boolean>
@@ -74,7 +75,7 @@ declare global {
       rejectSyncPairing?: (requestId: string) => Promise<boolean>
       onSyncPairRequest?: (callback: (request: SyncPairRequest) => void) => () => void
       onSyncProposal?: (callback: (proposal: SyncProposal) => void) => () => void
-      listScreenSources?: () => Promise<{ id: string; name: string }[]>
+      listScreenSources?: () => Promise<{ id: string; name: string; kind: 'screen' | 'window'; isPrimary?: boolean; isGame?: boolean }[]>
       selectScreenSource?: (sourceId: string | null) => Promise<boolean>
     }
   }

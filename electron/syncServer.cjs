@@ -165,6 +165,12 @@ function createSyncHost({ onProposal = () => {}, onPairRequest = () => {}, onSta
       return
     }
 
+    if (route === '/discover') {
+      request.resume()
+      sendJson(response, 200, { service: 'sc-command-hub', protocolVersion: 1 })
+      return
+    }
+
     if (route === '/pair') {
       if (pendingPairings.size >= MAX_PENDING_PAIRINGS) {
         sendJson(response, 429, { error: 'too-many-pending-pairings' })
