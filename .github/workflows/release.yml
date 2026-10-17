@@ -1,4 +1,4 @@
-name: Build and Release All Platforms[cite: 1]
+name: Build and Release All Platforms
 
 on:
   push:
@@ -10,7 +10,7 @@ permissions:
 
 jobs:
   build-windows:
-    name: Build Windows[cite: 1]
+    name: Build Windows
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -29,14 +29,13 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   build-linux:
-    name: Build Linux[cite: 1]
+    name: Build Linux
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: '24'
-      # Install Linux toolchain dependencies required for AppImage/electron-builder packaging
       - name: Install Linux Dependencies
         run: sudo apt-get update && sudo apt-get install -y libopenjp2-7 rpm libfuse2
       - run: npm install
@@ -51,7 +50,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   build-mac-desktop:
-    name: Build Mac Desktop[cite: 1]
+    name: Build Mac Desktop
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
@@ -70,7 +69,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   build-ios:
-    name: Build iOS App[cite: 1]
+    name: Build iOS App
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
