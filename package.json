@@ -1,7 +1,7 @@
 {
   "name": "sc-command-hub",
   "private": true,
-  "version": "1.0.6",
+  "version": "1.0.9",
   "type": "module",
   "main": "electron/main.cjs",
   "scripts": {
@@ -19,7 +19,10 @@
     "desktop:build:linux": "npm run build && electron-builder --linux AppImage deb",
     "mobile:sync": "npm run build && cap sync",
     "mobile:android": "npm run build && cap sync android && cap open android",
-    "mobile:ios": "npm run build && cap sync ios && cap open ios"
+    "mobile:ios": "npm run build && cap sync ios && cap open ios",
+    "release:patch": "npm version patch && git push && git push --tags",
+    "release:minor": "npm version minor && git push && git push --tags",
+    "release:major": "npm version major && git push && git push --tags"
   },
   "dependencies": {
     "@capacitor/android": "^8.5.3",
@@ -79,6 +82,13 @@
       ],
       "category": "Utility",
       "artifactName": "SC-Command-Hub-${version}-Linux-${arch}.${ext}"
+    },
+    "mac": {
+      "target": [
+        "dmg"
+      ],
+      "category": "public.app-category.utilities",
+      "artifactName": "SC-Command-Hub-${version}-Mac-${arch}.${ext}"
     }
   }
 }
