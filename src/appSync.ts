@@ -6,6 +6,8 @@ import type { MiningOpsState } from './miningOps'
 import type { PlannedRoute } from './routePlanner'
 import type { RefiningState } from './refining'
 import type { LocationCargoState } from './locationCargo'
+import { validSalvagingState, salvageStorageKey, type SalvagingState } from './salvagingOps.ts'
+import { validScannerState, scannerStorageKey, type ScannerState } from './scannerOps.ts'
 
 export type SyncSnapshot = {
   schemaVersion: 1
@@ -21,6 +23,8 @@ export type SyncSnapshot = {
     systemIndexSnapshot: { locationKeys: string[]; newLocationKeys: string[] } | null
     refining?: RefiningState
     locationCargo?: LocationCargoState
+    salvagingOps?: SalvagingState
+    scannerOps?: ScannerState
     preferences: {
       theme: 'field' | 'amber' | 'ice' | 'night' | 'redshift'
       gameChannel: 'LIVE' | 'PTU'
@@ -37,7 +41,7 @@ export type SyncProposal = {
   snapshot: SyncSnapshot
 }
 
-type MergeCategory = 'accounts' | 'ledger' | 'ships' | 'ship cargo' | 'crew members' | 'crew roles' | 'routes' | 'mining scans' | 'refining jobs' | 'stored cargo' | 'pending Game.log events' | 'market history'
+type MergeCategory = 'accounts' | 'ledger' | 'ships' | 'ship cargo' | 'crew members' | 'crew roles' | 'routes' | 'mining scans' | 'refining jobs' | 'stored cargo' | 'pending Game.log events' | 'market history' | 'salvage sessions' | 'scanner observations'
 export type MarketPriceSnapshot = { capturedAt: number; prices: { commodityId: string; commodityName: string; buyPrice: number | null; sellPrice: number | null }[] }
 type MergeStats = Record<MergeCategory, { added: number; duplicates: number; conflicts: number }>
 
@@ -48,7 +52,7 @@ export type SyncMergePreview = {
   accountBalanceChanges: { accountId: string; accountName: string; previousBalance: number | null; nextBalance: number }[]
 }
 
-const categories: MergeCategory[] = ['accounts', 'ledger', 'ships', 'ship cargo', 'crew members', 'crew roles', 'routes', 'mining scans', 'refining jobs', 'stored cargo', 'pending Game.log events', 'market history']
+const categories: MergeCategory[] = ['accounts', 'ledger', 'ships', 'ship cargo', 'crew members', 'crew roles', 'routes', 'mining scans', 'refining jobs', 'stored cargo', 'pending Game.log events', 'market history', 'salvage sessions', 'scanner observations']
 
 function emptyStats(): MergeStats {
   return Object.fromEntries(categories.map((category) => [category, { added: 0, duplicates: 0, conflicts: 0 }])) as MergeStats
@@ -172,6 +176,8 @@ export function validateSyncSnapshot(value: unknown): value is SyncSnapshot {
   if (data.preferences.gameChannel !== 'LIVE' && data.preferences.gameChannel !== 'PTU') return false
   if (data.refining !== undefined && (!isObject(data.refining) || !Array.isArray(data.refining.jobs) || data.refining.jobs.length > 2000 || !data.refining.jobs.every((job) => hasId(job) && Array.isArray(job.ores) && typeof job.completesAt === 'string'))) return false
   if (data.locationCargo !== undefined && (!isObject(data.locationCargo) || !isObject(data.locationCargo.byLocation) || !Object.values(data.locationCargo.byLocation).every((cargo) => isObject(cargo) && Object.values(cargo).every((quantity) => typeof quantity === 'number' && Number.isFinite(quantity) && quantity >= 0)))) return false
+  if (data.salvagingOps !== undefined && !validSalvagingState(data.salvagingOps)) return false
+  if (data.scannerOps !== undefined && !validScannerState(data.scannerOps)) return false
   return true
 }
 
@@ -305,6 +311,9 @@ export function previewSyncMerge(primary: SyncSnapshot, incoming: SyncSnapshot):
   }))
   const routes = mergeRecords(primary.data.routes, incomingRoutes, (item) => item.id, 'routes', stats, conflicts)
   const scans = mergeRecords(primary.data.miningOps.scans, incoming.data.miningOps.scans, (item) => item.id, 'mining scans', stats, conflicts)
+  const incomingSalvage = (incoming.data.salvagingOps?.sessions ?? []).map((session) => ({ ...session, shipId: session.shipId ? incomingShipIds.get(session.shipId) ?? session.shipId : null, money: session.money.map((entry) => ({ ...entry, ...(entry.ledgerId ? { ledgerId: ledgerIdMap.get(entry.ledgerId) ?? entry.ledgerId } : {}) })) }))
+  const salvageSessions = mergeRecords(primary.data.salvagingOps?.sessions ?? [], incomingSalvage, (item) => item.id, 'salvage sessions', stats, conflicts)
+  const scannerObservations = mergeRecords(primary.data.scannerOps?.observations ?? [], incoming.data.scannerOps?.observations ?? [], (item) => item.id, 'scanner observations', stats, conflicts)
   const refiningJobs = mergeRecords(primary.data.refining?.jobs ?? [], incoming.data.refining?.jobs ?? [], (item) => item.id, 'refining jobs', stats, conflicts)
   const storedCargo: Record<string, Record<string, number>> = Object.fromEntries(Object.entries(primary.data.locationCargo?.byLocation ?? {}).map(([location, cargo]) => [location, { ...cargo }]))
   for (const [location, cargo] of Object.entries(incoming.data.locationCargo?.byLocation ?? {})) {
@@ -345,6 +354,8 @@ export function previewSyncMerge(primary: SyncSnapshot, incoming: SyncSnapshot):
         crew: { members: crewMembers, roles: crewRoles },
         routes,
         miningOps: { scans },
+        ...((primary.data.salvagingOps || incoming.data.salvagingOps) ? { salvagingOps: { sessions: salvageSessions.slice(0, 500) } } : {}),
+        ...((primary.data.scannerOps || incoming.data.scannerOps) ? { scannerOps: { observations: scannerObservations.slice(0, 2000) } } : {}),
         gameLog: {
           pendingTransactions: usablePendingTransactions,
           processedEventIds: [...new Set([...primary.data.gameLog.processedEventIds, ...incoming.data.gameLog.processedEventIds])].slice(-20000),
@@ -383,6 +394,8 @@ export function persistSyncSnapshot(snapshot: SyncSnapshot, options: { keepLocal
     ] as [string, string][]),
     ...(snapshot.data.refining ? [['sc-command-hub.refining-v1', JSON.stringify(snapshot.data.refining)] as [string, string]] : []),
     ...(snapshot.data.locationCargo ? [['sc-command-hub.location-cargo-v1', JSON.stringify(snapshot.data.locationCargo)] as [string, string]] : []),
+    ...(snapshot.data.salvagingOps ? [[salvageStorageKey, JSON.stringify(snapshot.data.salvagingOps)] as [string, string]] : []),
+    ...(snapshot.data.scannerOps ? [[scannerStorageKey, JSON.stringify(snapshot.data.scannerOps)] as [string, string]] : []),
   ]
   let previous: readonly (readonly [string, string | null])[] = []
   try {

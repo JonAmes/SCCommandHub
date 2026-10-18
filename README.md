@@ -20,7 +20,7 @@ npm run dev
 
 ## Screenshot Reader
 
-Open **Mining & refining > Rock scan log** and choose **Image source**: **Primary screen** (the default), **Running apps**, or **Star Citizen**. Running apps reveals an **App window** selector listing available windows by title. Click **Capture screen** to start the selected source; changing a selection alone does not capture anything. You can also use **Load screenshot**, or **Take picture** on a detected mobile device. Drag the scan/cargo areas to adjust them and use **Read now** for another reading.
+Open **Mining & refining > Rock scan log** and choose **Image source**: **Primary screen** (the default), **Running apps**, or **Star Citizen**. Running apps reveals an **App window** selector listing available windows by title. Click **Capture screen** to start the selected source; changing a selection alone does not capture anything. You can also use **Load screenshot**, or **Take picture** on a detected mobile device. Scan/cargo areas are discovered automatically for live sources and uploaded images. No dragging, saved crop coordinates, or manual region setup is used. **Read now** rediscovers panels before reading them.
 
 The reader uses a contrast-enhanced panel read and up to six label-anchored numeric retries using contrast and HUD-text filters. Warnings identify low confidence, conflicting numbers, missing data, and unmatched minerals. These are not guarantees of accuracy: small, compressed text and colored text over terrain can still require manual correction. Older HUD resistance values without a percent sign are kept as displayed; no unit conversion is inferred. Automatic filling skips uncertain reads, and nothing is saved or applied to cargo without confirmation. Recognition runs locally; the app downloads OCR assets on first use.
 
@@ -28,9 +28,9 @@ In the desktop app, Primary screen uses the operating system's actual primary mo
 
 In a browser, the normal sharing picker is required and you must choose the desired screen/window there; the app cannot enumerate running windows or enforce a particular monitor/game selection. Running apps enumeration is therefore desktop-only. Screenshot loading and mobile camera capture do not require desktop source enumeration.
 
-Starting capture takes **four snapshots total**: one full-resolution frame to discover the panels, then three fresh snapshots cropped around their detected contents with a small margin. Discovery uses text headings and nearby measurement labels, not Example coordinates; it is bounded to two OCR preprocessing passes and a 3840-by-2160 working image. Each cropped snapshot is read separately. At least two must agree on a stable rock/composition or cargo totals before filling review; unresolved numeric fields remain blank rather than being averaged. Existing OCR warnings are retained because repeated agreement cannot rule out a systematic misread. Detected boxes stay temporary; explicit manual dragging retains the normal saved-area behavior.
+Starting capture takes **four snapshots total**: one full-resolution frame to discover the panels, then three fresh snapshots cropped around their detected contents with a small margin. Discovery uses text headings and nearby measurement labels, not Example coordinates; it is bounded to two OCR preprocessing passes and a 3840-by-2160 working image. Each cropped snapshot is read separately. The existing mining reader retains its two-of-three review policy; unresolved numeric fields remain blank rather than being averaged. Existing OCR warnings are retained because repeated agreement cannot rule out a systematic misread. Detected boxes stay temporary; legacy saved-area settings are ignored and never overwritten.
 
-The live preview stays active afterward. **Read now**, opt-in auto-fill, manual corrections, screenshot uploads, Example selection, and explicit save/cargo confirmation otherwise work as before. If discovery fails or frames stop arriving (for example, a minimized game), select the areas manually and use **Read now**, or restart capture. Changing source, stopping capture, changing areas, or resizing the captured window cancels obsolete automatic work. Some headerless/clipped panels cannot be detected, and colored text over terrain can still need correction. Star Citizen window capture should be checked in-game; synthetic stream tests cannot verify OS/game capture support.
+The live preview stays active afterward. **Read now**, opt-in auto-fill, manual corrections, screenshot uploads, and explicit save/cargo confirmation remain available. Failed live discovery retries automatically with a bounded delay; missing or unreadable panels never trigger a manual-box fallback. If frames stop arriving (for example, a minimized game), restore the game or restart capture. Source changes and stop cancel obsolete work; reads rediscover areas rather than trusting earlier coordinates. Some headerless/clipped panels cannot be detected, and colored text over terrain can still need data correction. Star Citizen window capture should be checked in-game; synthetic stream tests cannot verify OS/game capture support.
 
 Examples are now development/test fixtures only and are not bundled into the application or listed in Image source. Use Load screenshot to open one manually. Add dimensions, hand-annotated regions, and hand-checked values to `Examples/manifest.json` when extending accuracy tests. Fixture expected values are never substituted for recognition results. Ambiguous reference digits are omitted from scoring and documented in the fixture notes.
 
@@ -43,6 +43,23 @@ npm run test:ocr:images
 ```
 
 The image tests start and stop their own local Vite server, decode AVIF/PNG in Chromium, and use pinned local English language data without external network access. They compare exact recognized fields with hand-checked expectations, test full-frame panel discovery without preset coordinates, and verify four distinct frames through a simulated live stream. They also cover source fallback, review/edit safety, cancellation, and desktop/mobile overlays. `OCR_DEBUG=1` enables detailed recognition output. They do not claim every example is read perfectly. Inspect new fixture annotations visually before treating them as ground truth. Source-selection tests can be run separately with `node --test tests/screenCapture.test.mjs`.
+
+## Scanner, Salvaging, And Spawned Ship
+
+**Scanner** has Target and Contacts views, automatically located live readings, separately marked unverified changing measurements, saved stable observations, and manual records. **Salvaging** contains sessions with a target, location and ship; RMC and Construction Materials buffer/hold readings and capacities; collected material history; reconciliation; and sales/expenses. The first observation establishes a baseline. Repeated amounts do not add material, and drops or possible boxing/transfers pause accounting until explicitly reconciled. Manual corrections are not verified OCR. Only hold amounts can be applied to the session ship; buffers never become boxed cargo implicitly. End a session before changing its ship.
+
+**Personal hangar > Read ship terminal** locates a ship row with the exact action **Store**, excluding rows containing **Claim** or **Unknown**. A verified unique match to an existing Hangar ship proposes a change and requires confirmation. Multiple Store candidates, ambiguous names, and unmatched ships never change the active ship. There is no terminal clicking or game automation.
+
+New live readers automatically discover areas, take three fresh cropped frames, and require **all three confident OCR readings to agree** on stable identity and accounting values. Mismatches restart discovery with a 1-5 second delay until stopped. Changing distance/signature measurements stay unverified and are not saved as confirmed values. Uploaded screenshots are automatically located/read but remain unverified previews; repeated OCR of one image is not independent live verification. Navigation stops capture. Mobile screenshot review does not imply native live game capture support.
+
+Salvage finances are session records with optional links to existing ledger entries; they never post to bank accounts automatically. Net proceeds are recorded sales minus expenses, not unsold cargo valuation. Linked entries use current ledger totals; missing links are marked unresolved. Structured scanner/salvage records participate in sync/import/export, while old snapshots preserve new local records when those fields are absent. Images, streams and unverified measurements stay device-local.
+
+**Accuracy status:** the new scanner, salvage and terminal detectors are provisional until real game screenshots are supplied. Current parsers conservatively require labeled identities (such as `TARGET: VULTURE` or `CONTACT: ...`) and salvage rows containing a material, `BUFFER` or `HOLD`/`CARGO`, and explicit SCU. Unsupported layouts fail safely rather than requesting manual areas or inventing values. Synthetic tests verify control flow and ship confirmation, not Star Citizen HUD accuracy. Supply target/contact scanner, RMC/CM buffer/hold, and mixed Store/Claim/Unknown terminal screenshots before treating these modes as game-validated.
+
+```sh
+npm run test:operations
+node --experimental-strip-types --test tests/sync.test.mjs
+```
 
 ## Desktop
 
@@ -108,7 +125,7 @@ Sync includes accounts, ledger, hangar/cargo, crew, routes, mining records, Game
 
 ## Local data
 
-Accounts, trades, routes, crew, hangar, and mining records are stored on the device. They are not synchronized between installations or platforms.
+Accounts, trades, routes, crew, hangar, mining, scanner, and salvage records are stored on the device. Paired device sync can share structured records after host approval; screenshots and live capture remain device-local.
 
 ## Game.log integration
 

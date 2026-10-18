@@ -9,6 +9,11 @@ import { formatLocationCode, isAtLocation } from './playerLocation'
 import { SyncSettings } from './SyncSettings'
 import { UpdateStatus } from './UpdateStatus'
 import { ScanScreenReader } from './ScanScreenReader'
+import { ScannerPanel } from './ScannerPanel'
+import { SalvagingPanel } from './SalvagingPanel'
+import { ShipTerminalReader } from './ShipTerminalReader'
+import { loadScannerState, saveScannerState, type ScannerState } from './scannerOps'
+import { loadSalvagingState, saveSalvagingState, type SalvagingState } from './salvagingOps'
 import './App.css'
 import { clearUexCache, getUexData, readNumber, readText, type UexRow } from './uex'
 import { captureMarketPriceSnapshot, getMarketTickerEntries, getMarketTickerHistoryStatus, loadMarketPriceHistory, MARKET_SNAPSHOT_INTERVAL_MS, saveMarketPriceHistory, type MarketPriceSnapshot, type PriceChange } from './marketTicker'
@@ -33,7 +38,7 @@ const gameRootsKey = 'sc-command-hub.game-roots-v1'
 
 type AppTheme = 'field' | 'amber' | 'ice' | 'night' | 'redshift'
 type WorkspaceMode = 'personal' | 'organization'
-type Section = 'dashboard' | 'settings' | 'trade' | 'finance' | 'holdings' | 'hangar' | 'crew' | 'routePlanner' | 'commodities' | 'ships' | 'systems' | 'mining' | 'inventory' | 'fuelPrices'
+type Section = 'dashboard' | 'settings' | 'trade' | 'finance' | 'holdings' | 'hangar' | 'crew' | 'routePlanner' | 'commodities' | 'ships' | 'systems' | 'mining' | 'inventory' | 'fuelPrices' | 'scanner' | 'salvaging'
 type MiningTab = 'market' | 'calculator' | 'refinery' | 'refining' | 'scans'
 type DatasetKey = 'commodities' | 'terminals' | 'vehicles' | 'star_systems' | 'commodities_prices_all' | 'vehicles_purchases_prices_all' | 'fuel_prices_all' | 'refineries_methods' | 'refineries_yields' | 'refineries_capacities'
 type DatasetState = { rows: UexRow[]; status: 'idle' | 'loading' | 'ready' | 'error'; error?: string }
@@ -107,8 +112,8 @@ function clearClientSyncState() {
 
 // Compares shared records only; market history, system index, and preferences are device-local.
 function syncDataSignature(snapshot: SyncSnapshot) {
-  const { finance, hangar, crew, routes, miningOps, gameLog, refining, locationCargo } = snapshot.data
-  return JSON.stringify([finance, hangar, crew, routes, miningOps, gameLog, refining ?? { jobs: [] }, locationCargo ?? { byLocation: {} }])
+  const { finance, hangar, crew, routes, miningOps, gameLog, refining, locationCargo, scannerOps, salvagingOps } = snapshot.data
+  return JSON.stringify([finance, hangar, crew, routes, miningOps, gameLog, refining ?? { jobs: [] }, locationCargo ?? { byLocation: {} }, scannerOps ?? { observations: [] }, salvagingOps ?? { sessions: [] }])
 }
 
 function getStoredGameChannel(): GameChannel {
@@ -385,6 +390,8 @@ function App() {
   const [hangarState, setHangarState] = useState<HangarState>(loadHangarState)
   const [crewState, setCrewState] = useState<CrewState>(loadCrewState)
   const [miningOpsState, setMiningOpsState] = useState<MiningOpsState>(loadMiningOpsState)
+  const [scannerState, setScannerState] = useState<ScannerState>(loadScannerState)
+  const [salvagingState, setSalvagingState] = useState<SalvagingState>(loadSalvagingState)
   const [refiningState, setRefiningState] = useState<RefiningState>(loadRefiningState)
   const [locationCargo, setLocationCargo] = useState<LocationCargoState>(loadLocationCargo)
   const [miningTab, setMiningTab] = useState<MiningTab>('market')
@@ -430,6 +437,8 @@ function App() {
         crew: crewState,
         routes: routePlans,
         miningOps: miningOpsState,
+        scannerOps: scannerState,
+        salvagingOps: salvagingState,
         gameLog: gameLogState,
         marketPriceHistory: marketHistory,
         systemIndexSnapshot: getStoredSystemIndexSnapshot(),
@@ -452,6 +461,8 @@ function App() {
     setCrewState(snapshot.data.crew)
     setRoutePlans(snapshot.data.routes)
     setMiningOpsState(snapshot.data.miningOps)
+    if (snapshot.data.scannerOps) setScannerState(snapshot.data.scannerOps)
+    if (snapshot.data.salvagingOps) setSalvagingState(snapshot.data.salvagingOps)
     setGameLogState(snapshot.data.gameLog)
     setRefiningState(snapshot.data.refining ?? { jobs: [] })
     setLocationCargo(snapshot.data.locationCargo ?? { byLocation: {} })
@@ -495,7 +506,7 @@ function App() {
     if (syncHostInfo.status !== 'listening') return
     const timer = window.setTimeout(() => { void window.starCitizenBridge?.publishSyncSnapshot?.(captureSyncSnapshot()) }, 1000)
     return () => window.clearTimeout(timer)
-  }, [syncHostInfo.status, financeState, hangarState, crewState, routePlans, miningOpsState, gameLogState, refiningState, locationCargo, marketHistory, newLocationKeys, theme, gameChannel, workspaceMode])
+  }, [syncHostInfo.status, financeState, hangarState, crewState, routePlans, miningOpsState, scannerState, salvagingState, gameLogState, refiningState, locationCargo, marketHistory, newLocationKeys, theme, gameChannel, workspaceMode])
 
   const runClientSync = useEffectEvent(async (pairing: SyncClientPairing) => {
     if (clientSyncBusyRef.current) return
@@ -1187,6 +1198,8 @@ function App() {
       saveGameLogState(nextGameLogState),
       saveRefiningState({ jobs: [] }),
       saveLocationCargo({ byLocation: {} }),
+      saveScannerState({ observations: [] }),
+      saveSalvagingState({ sessions: [] }),
     ].every(Boolean)
     financeStateRef.current = nextFinance
     hangarStateRef.current = nextHangar
@@ -1198,6 +1211,8 @@ function App() {
     setRoutePlans([])
     setRefiningState({ jobs: [] })
     setLocationCargo({ byLocation: {} })
+    setScannerState({ observations: [] })
+    setSalvagingState({ sessions: [] })
     setFinanceTab('ledger')
     setSelectedVehicleId('')
     setTradePreset(null)
@@ -1453,6 +1468,8 @@ function App() {
           <div className="nav-caption nav-caption-spaced">FIELD WORK</div>
           <NavButton active={section === 'trade'} onClick={() => setSection('trade')} icon="↗" label="Trade routes" />
           <NavButton active={section === 'mining'} onClick={() => setSection('mining')} icon="⌁" label="Mining & refining" />
+          <NavButton active={section === 'scanner'} onClick={() => setSection('scanner')} icon="◎" label="Scanner" />
+          <NavButton active={section === 'salvaging'} onClick={() => setSection('salvaging')} icon="◇" label="Salvaging" />
         </nav>
         <div className="sidebar-bottom">
           <div className="api-status">
@@ -1580,6 +1597,9 @@ function App() {
           {section === 'mining' && <MiningView prices={prices} commodities={commodities} state={datasetsState.commodities_prices_all} methods={refineryMethods} methodsState={datasetsState.refineries_methods} yields={refineryYields} yieldsState={datasetsState.refineries_yields} capacities={refineryCapacities} capacitiesState={datasetsState.refineries_capacities} search={search} miningOpsState={miningOpsState} onAddScan={addMiningScan} onRemoveScan={removeMiningScan} activeShipName={activeShip?.name} onSyncCargo={syncMinedCargo} tab={miningTab} onTabChange={setMiningTab} refineryNames={refineryNames} shipOre={getShipOre(hangarState, hangarState.activeShipId, rawMineralNames)} refiningJobs={refiningState.jobs} onStartRefining={startRefiningOrder} onCollectRefining={collectRefining} onRemoveRefining={(jobId) => updateRefiningJobs(removeRefiningJob(refiningState, jobId))} />}
           {section === 'fuelPrices' && <FuelPricesView rows={filteredRows(fuelPrices, ['commodity_name', 'terminal_name', 'star_system_name', 'planet_name', 'city_name'])} terminals={terminals} state={datasetsState.fuel_prices_all} />}
           {section === 'inventory' && <ItemCatalogView key={token} token={token} />}
+          {section === 'hangar' && <ShipTerminalReader hangar={hangarState} onConfirm={updateActiveShip} />}
+          {section === 'scanner' && <ScannerPanel state={scannerState} onChange={(next) => { setScannerState(next); if (!saveScannerState(next)) setNotice('Scanner records are available for this session, but storage is unavailable.') }} />}
+          {section === 'salvaging' && <SalvagingPanel state={salvagingState} ship={activeShip} ledger={financeState.transactions} onChange={(next) => { setSalvagingState(next); if (!saveSalvagingState(next)) setNotice('Salvage records are available for this session, but storage is unavailable.') }} onSyncCargo={(shipId, amounts) => { if (shipId !== hangarState.activeShipId) return 'Session ship is no longer active.'; const result = setShipOreCargo(hangarState, shipId, amounts); if (!result.state) return result.error ?? 'Cargo could not be updated.'; persistHangar(result.state, 'Salvage hold updated.'); return '' }} />}
 
           <footer className="data-footer"><span>UEX data is community-maintained and may be incomplete or outdated.</span><span><span className="footer-dot" /> {allReady ? `${prices.length.toLocaleString()} PRICE RECORDS` : 'AWAITING DATA'}</span></footer>
         </main>
@@ -3578,7 +3598,7 @@ function FuelPricesView({ rows, terminals, state }: { rows: UexRow[]; terminals:
 }
 
 function sectionTitle(section: Section) {
-  const titles: Record<Section, string> = { dashboard: 'Dashboard', settings: 'Settings', trade: 'Trade routes', finance: 'Money & ledger', holdings: 'Cargo holdings', hangar: 'Personal hangar', crew: 'Crew manager', routePlanner: 'Route planner', commodities: 'Commodities', ships: 'Ships & vehicles', systems: 'Star systems', mining: 'Mining & refining', inventory: 'Items & equipment', fuelPrices: 'Fuel prices' }
+  const titles: Record<Section, string> = { dashboard: 'Dashboard', settings: 'Settings', trade: 'Trade routes', finance: 'Money & ledger', holdings: 'Cargo holdings', hangar: 'Personal hangar', crew: 'Crew manager', routePlanner: 'Route planner', commodities: 'Commodities', ships: 'Ships & vehicles', systems: 'Star systems', mining: 'Mining & refining', inventory: 'Items & equipment', fuelPrices: 'Fuel prices', scanner: 'Scanner', salvaging: 'Salvaging' }
   return titles[section]
 }
 
@@ -3596,6 +3616,8 @@ function sectionDescription(section: Section) {
     ships: 'Explore the UEX vehicle registry and compare published specifications.',
     systems: 'Browse UEX systems, planets, terminal locations, and current commodity markets.',
     mining: 'Review reported ore prices and stock at listed terminals.',
+    scanner: 'Target intelligence and contact history.',
+    salvaging: 'Material recovery, sessions, and realized proceeds.',
     inventory: 'Equipment and item records from UEX.',
     fuelPrices: 'Compare current quantum and hydrogen fuel prices at UEX terminals.',
   }

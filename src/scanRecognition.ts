@@ -21,7 +21,7 @@ export function locateScanPanels(words: LocatedText[], width: number, height: nu
   const warnings: string[] = []
   for (const [target, headers] of [['scan', scanHeaders], ['cargo', cargoHeaders]] as const) {
     if (headers.length !== 1) {
-      warnings.push(headers.length ? `Multiple ${target} panels found; select the area manually.` : `No ${target} panel found.`)
+      warnings.push(headers.length ? `Multiple ${target} panels found; waiting for an unambiguous view.` : `No ${target} panel found.`)
       continue
     }
     const header = headers[0]
@@ -37,11 +37,11 @@ export function locateScanPanels(words: LocatedText[], width: number, height: nu
     const content = rows.filter((row) => row.bbox.x0 >= left && row.bbox.x1 <= right && row.bbox.y0 >= header.bbox.y0 && row.bbox.y1 <= bottom)
     const labels = content.filter((row) => /\b(?:MASS|RESIST[A-Z]*|INSTAB[A-Z]*)\b/i.test(row.text))
     if (target === 'scan' && (labels.length < 2 || !content.some((row) => /%|COMPOSITION/i.test(row.text)))) {
-      warnings.push('Scan heading found without enough measurements; select the area manually.')
+      warnings.push('Scan heading found without enough measurements; waiting for a complete panel.')
       continue
     }
     if (target === 'cargo' && (!content.some((row) => /\d+[.,]\d+/.test(row.text)) || !content.some((row) => /S[CG][UVY]|\d+[.,]\d+\s*\//i.test(row.text)))) {
-      warnings.push('Cargo heading is clipped or unreadable; select the area manually.')
+      warnings.push('Cargo heading is clipped or unreadable; waiting for a complete panel.')
       continue
     }
     let relevant = content.filter((row) => target === 'scan'
@@ -90,8 +90,8 @@ export async function discoverScanPanels(worker: ScanWorker, frame: HTMLCanvasEl
     if (regions.scan && regions.cargo) break
   }
   const warnings: string[] = []
-  if (!regions.scan) warnings.push('No unambiguous scan panel found; select its area manually.')
-  if (!regions.cargo) warnings.push('No complete cargo panel found; select its area manually if visible.')
+  if (!regions.scan) warnings.push('No unambiguous scan panel found.')
+  if (!regions.cargo) warnings.push('No complete cargo panel found.')
   return { regions, warnings, text: texts.join('\n') }
 }
 
@@ -121,7 +121,7 @@ export function waitForCaptureFrame(video: HTMLVideoElement, signal: AbortSignal
     }
     if (signal.aborted) { aborted(); return }
     signal.addEventListener('abort', aborted, { once: true })
-    timer = setTimeout(() => fail(new Error('No fresh game frames arrived. Restore the game window or select an area manually.')), 5000)
+    timer = setTimeout(() => fail(new Error('No fresh game frames arrived. Restore the game window or restart capture.')), 5000)
     schedule()
   })
 }

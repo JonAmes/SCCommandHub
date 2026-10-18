@@ -204,6 +204,37 @@ test('validates sync snapshots and rejects malformed records', () => {
   assert.equal(validateSyncSnapshot({ ...valid, data: { ...valid.data, gameLog: { pendingTransactions: [], processedEventIds: [], resolvedEventIds: 'bad' } } }), false)
 })
 
+test('scanner and salvage records validate, merge, remap links and preserve old snapshot storage', async () => {
+  const { startSalvageSession, salvageStorageKey } = await import('../src/salvagingOps.ts')
+  const { scannerStorageKey } = await import('../src/scannerOps.ts')
+  const session = startSalvageSession({ sessions: [] }, { shipId: 'client-ship', shipName: 'Vulture', target: 'Wreck', location: 'Yela' }).sessions[0]
+  session.money.push({ id: 'money', kind: 'sale', amount: 100, note: 'Sale', ledgerId: 'client-sale', recordedAt: createdAt })
+  const ship = (id) => ({ id, vehicleId: 'vulture', name: 'Vulture', manufacturer: 'Drake', cargoCapacity: 12, photoUrl: '', addedAt: createdAt })
+  const trade = { id: 'host-sale', sourceEventId: 'sale-event', side: 'game_sale', accountId: 'wallet', accountName: 'Wallet', commodity: 'RMC', terminal: 'Shop', quantity: 1, unitPrice: 100, total: 100, note: 'Game.log LIVE', recordedAt: createdAt }
+  const account = { id: 'wallet', name: 'Wallet', balance: 100, createdAt }
+  const primary = createSnapshot({ hangar: { ships: [ship('host-ship')], activeShipId: 'host-ship', cargoByShip: {} }, finance: { accounts: [account], transactions: [trade] }, salvagingOps: { sessions: [] }, scannerOps: { observations: [] } })
+  const incoming = createSnapshot({ hangar: { ships: [ship('client-ship')], activeShipId: 'client-ship', cargoByShip: {} }, finance: { accounts: [account], transactions: [{ ...trade, id: 'client-sale' }] }, salvagingOps: { sessions: [session] }, scannerOps: { observations: [{ id: 'scan', target: 'contacts', identity: 'CONTACT 1', values: {}, recordedAt: createdAt, location: 'Yela', source: 'ocr' }] } })
+  assert.equal(validateSyncSnapshot(incoming), true)
+  const merged = previewSyncMerge(primary, incoming)
+  assert.equal(merged.snapshot.data.salvagingOps.sessions[0].shipId, 'host-ship')
+  assert.equal(merged.snapshot.data.salvagingOps.sessions[0].money[0].ledgerId, 'host-sale')
+  assert.equal(merged.stats['salvage sessions'].added, 1)
+  assert.equal(merged.stats['scanner observations'].added, 1)
+  const hostSession = { ...session, target: 'Host target' }
+  assert.equal(previewSyncMerge(createSnapshot({ salvagingOps: { sessions: [hostSession] } }), incoming).snapshot.data.salvagingOps.sessions[0].target, 'Host target')
+  assert.equal(validateSyncSnapshot(createSnapshot({ salvagingOps: { sessions: [{ ...session, current: { amount: -1 } }] } })), false)
+  assert.equal(validateSyncSnapshot(createSnapshot({ scannerOps: { observations: [null] } })), false)
+  const oldWindow = globalThis.window
+  const storage = new Map([[salvageStorageKey, JSON.stringify(incoming.data.salvagingOps)], [scannerStorageKey, JSON.stringify(incoming.data.scannerOps)]])
+  globalThis.window = { localStorage: { getItem: (key) => storage.get(key) ?? null, setItem: (key, value) => storage.set(key, value), removeItem: (key) => storage.delete(key) } }
+  try {
+    assert.equal(persistSyncSnapshot(createSnapshot()), true)
+    assert.deepEqual(JSON.parse(storage.get(salvageStorageKey)), incoming.data.salvagingOps)
+    assert.equal(persistSyncSnapshot(merged.snapshot), true)
+    assert.deepEqual(JSON.parse(storage.get(scannerStorageKey)), merged.snapshot.data.scannerOps)
+  } finally { globalThis.window = oldWindow }
+})
+
 test('merges by stable IDs, preserves primary conflicts, and requeues client Game.log entries', () => {
   const primary = createSnapshot({
     finance: { accounts: [{ id: 'primary-account', name: 'Wallet', balance: 500, createdAt }], transactions: [] },

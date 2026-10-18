@@ -10,6 +10,7 @@
     "lint": "oxlint",
     "test:ocr": "node --experimental-strip-types --test tests/scanOcr.test.mjs",
     "test:ocr:images": "node --test tests/scanRecognition.test.mjs",
+    "test:operations": "node --experimental-strip-types --test tests/expandedOcr.test.mjs tests/salvaging.test.mjs tests/operations.test.mjs",
     "preview": "vite preview",
     "postinstall": "install-electron",
     "desktop:dev": "concurrently -k \"vite --host 127.0.0.1 --strictPort\" \"wait-on http://127.0.0.1:5173 && electron .\"",
@@ -28,6 +29,7 @@
     "@capacitor/share": "^8.0.3",
     "bonjour-service": "^1.4.4",
     "cordova-plugin-zeroconf": "^1.4.2",
+    "lucide-react": "^1.59.0",
     "react": "^19.2.8",
     "react-dom": "^19.2.8",
     "tesseract.js": "^7.0.0"

@@ -182,7 +182,7 @@ export function agreeCaptureReadings(readings: BurstReading[]) {
     }
     if (matching.length !== 3) warnings.push('One scan differed from the other two; verify the selected reading.')
     if (!isCompleteScan(parsed)) warnings.push('The agreed scan is incomplete or invalid; review it manually.')
-  } else if (scans.length) warnings.push('The rock or its composition did not stay consistent across captures; use Read now or select the area manually.')
+  } else if (scans.length) warnings.push('The rock or its composition did not stay consistent across captures; waiting for a stable panel.')
   const cargoReadings = readings.flatMap((reading) => reading.cargo ? [reading.cargo] : [])
   const cargoKey = (reading: CargoReading) => JSON.stringify([reading.items.map((item) => `${item.commodity}:${item.scu}`).sort(), [...reading.unmatched].sort()])
   cargo = cargoReadings.find((reading) => cargoReadings.filter((other) => cargoKey(other) === cargoKey(reading)).length >= 2)

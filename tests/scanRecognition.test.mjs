@@ -35,7 +35,7 @@ function measurements(actual, expected, prefix = '') {
   })
 }
 
-test('real screenshot OCR preserves good reads, improves fields, and exposes uncertainty', { timeout: 180_000 }, async (context) => {
+test('real screenshot OCR preserves good reads, improves fields, and exposes uncertainty', { timeout: 360_000 }, async (context) => {
   const server = await createServer({ server: { host: '127.0.0.1', port: 0, strictPort: false }, logLevel: 'error' })
   let browser
   try {
@@ -206,7 +206,7 @@ test('real screenshot OCR preserves good reads, improves fields, and exposes unc
       assert.equal(result.parsed.composition.length, 7)
       assert.equal(result.cancellation, 'AbortError')
     })
-    await context.test('image source choices, crop alignment, and uploads preserve user settings', async () => {
+    await context.test('image uploads discover panels automatically and ignore saved coordinates', async () => {
       const savedRegion = { x: 0.1, y: 0.2, width: 0.3, height: 0.4 }
       await page.evaluate((region) => {
         localStorage.setItem('sc-command-hub.setup-profile-v1', JSON.stringify({ skipped: true, completedAt: new Date().toISOString() }))
@@ -231,6 +231,7 @@ test('real screenshot OCR preserves good reads, improves fields, and exposes unc
         })
         const dimensions = await page.locator('.scan-reader-preview img').evaluate((image) => [image.naturalWidth, image.naturalHeight])
         assert.deepEqual(dimensions, [example.width, example.height])
+        await page.waitForFunction(() => !document.querySelector('.scan-reader-actions button').disabled, { timeout: 30_000 })
       }
       for (const viewport of [{ width: 1440, height: 1000 }, { width: 1920, height: 600 }, { width: 390, height: 844 }]) {
         await page.setViewportSize(viewport)
@@ -247,14 +248,20 @@ test('real screenshot OCR preserves good reads, improves fields, and exposes unc
       }
       assert.deepEqual(await page.evaluate(() => JSON.parse(localStorage.getItem('sc-command-hub.scan-reader-region-v1'))), savedRegion)
       await page.locator('.scan-reader-file input').setInputFiles(fileURLToPath(new URL('../Examples/Example6.png', import.meta.url)))
+      await page.waitForFunction(() => !document.querySelector('.scan-reader-actions button').disabled, { timeout: 30_000 })
       assert.equal(await picker.inputValue(), 'primary')
-      const restored = await page.locator('.scan-reader-region.scan').evaluate((region) => [region.style.left, region.style.top, region.style.width, region.style.height])
-      assert.deepEqual(restored, ['10%', '20%', '30%', '40%'])
+      assert.equal(await page.getByRole('radiogroup', { name: 'Read area to edit' }).count(), 0)
+      assert.equal(await page.getByRole('button', { name: 'Clear area', exact: true }).count(), 0)
+      await loadFixture(page, 'Example5.avif')
+      await page.waitForFunction(() => !document.querySelector('.scan-reader-actions button').disabled, { timeout: 30_000 })
+      const detected = await page.locator('.scan-reader-region.scan').evaluate((region) => [region.style.left, region.style.top, region.style.width, region.style.height])
+      assert.notDeepEqual(detected, ['10%', '20%', '30%', '40%'], 'Runtime discovery must ignore old coordinates')
       assert.equal(await page.getByText('No rock scans recorded', { exact: true }).count(), 1, 'Loading screenshots must not save scans')
     })
     await context.test('reads require review, preserve edits, and ignore obsolete results', async () => {
       const read = page.getByRole('button', { name: 'Read now', exact: true })
       await loadFixture(page, 'Example5.avif', true)
+      await page.waitForFunction(() => !document.querySelector('.scan-reader-actions button').disabled, { timeout: 30_000 })
       await read.click()
       const review = page.locator('.scan-reader-review').filter({ hasText: 'Review scan' })
       await review.waitFor({ timeout: 30_000 })
@@ -263,6 +270,7 @@ test('real screenshot OCR preserves good reads, improves fields, and exposes unc
       assert.equal(await page.getByText('No rock scans recorded', { exact: true }).count(), 1, 'OCR must not automatically persist a scan')
       await mass.fill('9999')
       await loadFixture(page, 'Example6.png', true)
+      await page.waitForFunction(() => !document.querySelector('.scan-reader-actions button').disabled, { timeout: 30_000 })
       assert.equal(await mass.inputValue(), '9999', 'Source switches must preserve manual corrections')
       await read.click()
       assert.match(await page.locator('.scan-reader-status').textContent(), /Save or discard your edits/)

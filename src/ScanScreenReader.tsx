@@ -1,7 +1,8 @@
 import { useEffect, useEffectEvent, useRef, useState } from 'react'
 import { Capacitor } from '@capacitor/core'
 import type { NewRockScan, RockScan } from './miningOps'
-import { captureScanRegion, captureScreenBurst, createScanWorker, recognizeScanRegion } from './scanRecognition'
+import { captureScanRegion, captureScreenBurst, createScanWorker, discoverScanPanels, recognizeScanRegion } from './scanRecognition'
+import { captureDelay } from './ocrCapture'
 import { isCompleteScan, primaryMineral, scanSignature, type CargoReading, type ParsedRockScan, type ScanRegion } from './scanOcr'
 
 const locationKey = 'sc-command-hub.scan-reader-location-v1'
@@ -12,22 +13,7 @@ type ScreenSource = { id: string; name: string; kind: 'screen' | 'window'; isPri
 type ImageSourceMode = 'primary' | 'apps' | 'game'
 type RegionTarget = 'scan' | 'cargo'
 
-const regionKeys: Record<RegionTarget, string> = {
-  scan: 'sc-command-hub.scan-reader-region-v1',
-  cargo: 'sc-command-hub.scan-reader-cargo-region-v1',
-}
 const regionLabels: Record<RegionTarget, string> = { scan: 'Scan results', cargo: 'Cargo' }
-
-function loadRegion(target: RegionTarget): ScanRegion | null {
-  try {
-    const value: unknown = JSON.parse(window.localStorage.getItem(regionKeys[target]) ?? 'null')
-    if (!value || typeof value !== 'object') return null
-    const region = value as ScanRegion
-    return [region.x, region.y, region.width, region.height].every((part) => Number.isFinite(part) && part >= 0 && part <= 1) && region.width > 0 && region.height > 0 && region.x + region.width <= 1 && region.y + region.height <= 1 ? region : null
-  } catch {
-    return null
-  }
-}
 
 function readStoredLocation() {
   try {
@@ -35,10 +21,6 @@ function readStoredLocation() {
   } catch {
     return ''
   }
-}
-
-function normalizeRegion(start: { x: number; y: number }, end: { x: number; y: number }): ScanRegion {
-  return { x: Math.min(start.x, end.x), y: Math.min(start.y, end.y), width: Math.abs(end.x - start.x), height: Math.abs(end.y - start.y) }
 }
 
 function cargoSignature(reading: CargoReading) {
@@ -75,9 +57,7 @@ export function ScanScreenReader({ scans, minerals, activeShipName, onAdd, onSyn
   const [imageSourceMode, setImageSourceMode] = useState<ImageSourceMode>('primary')
   const [sourceReady, setSourceReady] = useState(false)
   const [sourceRatio, setSourceRatio] = useState(16 / 9)
-  const [regions, setRegions] = useState<Record<RegionTarget, ScanRegion | null>>(() => ({ scan: loadRegion('scan'), cargo: loadRegion('cargo') }))
-  const [target, setTarget] = useState<RegionTarget>('scan')
-  const [draft, setDraft] = useState<ScanRegion | null>(null)
+  const [regions, setRegions] = useState<Record<RegionTarget, ScanRegion | null>>({ scan: null, cargo: null })
   const [location, setLocation] = useState(readStoredLocation)
   const [status, setStatus] = useState('')
   const [busy, setBusy] = useState(false)
@@ -93,9 +73,9 @@ export function ScanScreenReader({ scans, minerals, activeShipName, onAdd, onSyn
   const [appSourceId, setAppSourceId] = useState('')
   const videoRef = useRef<HTMLVideoElement>(null)
   const imageRef = useRef<HTMLImageElement>(null)
+  const pendingImageRef = useRef<HTMLImageElement | null>(null)
   const streamRef = useRef<MediaStream | null>(null)
   const workerRef = useRef<Promise<OcrWorker> | null>(null)
-  const dragStartRef = useRef<{ x: number; y: number } | null>(null)
   const busyRef = useRef(false)
   const revisionRef = useRef(0)
   const burstRef = useRef<AbortController | null>(null)
@@ -140,8 +120,6 @@ export function ScanScreenReader({ scans, minerals, activeShipName, onAdd, onSyn
     streamRef.current = null
     setAuto(false)
     setSourceReady(false)
-    dragStartRef.current = null
-    setDraft(null)
     pendingScanRef.current = ''
     pendingCargoRef.current = ''
     filledScanRef.current = ''
@@ -206,19 +184,28 @@ export function ScanScreenReader({ scans, minerals, activeShipName, onAdd, onSyn
     try {
       const worker = await getWorker()
       controller.signal.throwIfAborted()
-      const result = await captureScreenBurst(worker, video, minerals, {
-        signal: controller.signal,
-        onProgress: setStatus,
-        onRegions: setRegions,
-      })
-      if (revision !== revisionRef.current || controller.signal.aborted) return
-      setRawText(result.text)
-      setReadWarnings(result.warnings)
-      if (result.parsed && !scanDirty) fillScan(result.parsed)
-      if (result.cargo && !cargoDirty) fillCargo(result.cargo)
-      setStatus(scanDirty || cargoDirty ? 'Save or discard your edits before loading a new reading.' : result.parsed || result.cargo ? 'Three cropped captures compared. Review the agreed values, then save.' : 'No stable reading found. Adjust the areas and use Read now.')
+      let attempts = 0
+      while (!controller.signal.aborted) {
+        const result = await captureScreenBurst(worker, video, minerals, {
+          signal: controller.signal,
+          onProgress: (message) => { if (!controller.signal.aborted) setStatus(message) },
+          onRegions: (value) => { if (!controller.signal.aborted) setRegions(value) },
+        })
+        if (revision !== revisionRef.current || controller.signal.aborted) return
+        setRawText(result.text)
+        setReadWarnings(result.warnings)
+        if (result.parsed && !scanDirty) fillScan(result.parsed)
+        if (result.cargo && !cargoDirty) fillCargo(result.cargo)
+        if (result.parsed || result.cargo) {
+          setStatus(scanDirty || cargoDirty ? 'Save or discard your edits before loading a new reading.' : 'Three cropped captures compared. Review the agreed values, then save.')
+          break
+        }
+        attempts += 1
+        setStatus(`No stable reading. Rediscovering panels (attempt ${attempts})...`)
+        await captureDelay(controller.signal, Math.min(5000, attempts * 1000))
+      }
     } catch (error) {
-      if (revision === revisionRef.current && !controller.signal.aborted) setStatus(error instanceof Error ? error.message : 'Capture failed. Select an area manually and use Read now.')
+      if (revision === revisionRef.current && !controller.signal.aborted) setStatus(error instanceof Error ? error.message : 'Capture failed. Restart capture to rediscover panels.')
     } finally {
       busyRef.current = false
       setBusy(false)
@@ -232,10 +219,8 @@ export function ScanScreenReader({ scans, minerals, activeShipName, onAdd, onSyn
     let height = video.videoHeight
     const resized = () => {
       if (width && height && (video.videoWidth !== width || video.videoHeight !== height)) {
-        revisionRef.current += 1
-        burstRef.current?.abort()
         setRegions({ scan: null, cargo: null })
-        setStatus('Capture dimensions changed. Select the areas manually or restart capture.')
+        setStatus('Capture dimensions changed. Rediscovering panels on the next read.')
       }
       width = video.videoWidth
       height = video.videoHeight
@@ -275,7 +260,7 @@ export function ScanScreenReader({ scans, minerals, activeShipName, onAdd, onSyn
 
   function loadImage(file: File | undefined) {
     if (!file || !file.type.startsWith('image/')) return
-    setRegions({ scan: loadRegion('scan'), cargo: loadRegion('cargo') })
+    setRegions({ scan: null, cargo: null })
     openImage(URL.createObjectURL(file))
   }
 
@@ -290,7 +275,7 @@ export function ScanScreenReader({ scans, minerals, activeShipName, onAdd, onSyn
     pendingCargoRef.current = ''
     setImageUrl(url)
     setSourceKind('image')
-    setStatus('Image loaded. Drag over the SCAN RESULTS panel to set the read area.')
+    setStatus('Image loaded. Discovering panels automatically...')
   }
 
   function getWorker() {
@@ -299,29 +284,52 @@ export function ScanScreenReader({ scans, minerals, activeShipName, onAdd, onSyn
     return workerRef.current
   }
 
-  function captureRegion(region: ScanRegion) {
-    const video = videoRef.current
-    const image = imageRef.current
-    const source = sourceKind === 'screen' ? video : image
-    const width = sourceKind === 'screen' ? video?.videoWidth ?? 0 : image?.naturalWidth ?? 0
-    const height = sourceKind === 'screen' ? video?.videoHeight ?? 0 : image?.naturalHeight ?? 0
-    if (!source || !width || !height) return null
-    return captureScanRegion(source, width, height, region)
+  async function discoverImage(image: HTMLImageElement) {
+    const revision = revisionRef.current
+    if (busyRef.current) { pendingImageRef.current = image; return }
+    busyRef.current = true
+    setBusy(true)
+    try {
+      const frame = document.createElement('canvas')
+      frame.width = image.naturalWidth
+      frame.height = image.naturalHeight
+      frame.getContext('2d')!.drawImage(image, 0, 0)
+      const found = await discoverScanPanels(await getWorker(), frame)
+      if (revision !== revisionRef.current) return
+      setRegions(found.regions)
+      setStatus(found.regions.scan || found.regions.cargo ? 'Panels discovered. Screenshot readings require review.' : 'No supported panels found. Load another screenshot.')
+    } catch {
+      if (revision === revisionRef.current) setStatus('Automatic panel discovery failed. Try another screenshot.')
+    } finally {
+      busyRef.current = false
+      setBusy(false)
+      const pending = pendingImageRef.current
+      pendingImageRef.current = null
+      if (pending && pending === imageRef.current && pending.complete && pending.naturalWidth) void discoverImage(pending)
+    }
   }
 
   async function readRegion() {
     if (busyRef.current || !sourceReady) return null
     const revision = revisionRef.current
-    const scanCanvas = regions.scan ? captureRegion(regions.scan) : null
-    const cargoCanvas = regions.cargo ? captureRegion(regions.cargo) : null
-    if (!scanCanvas && !cargoCanvas) {
-      setStatus(regions.scan || regions.cargo ? 'Capture source is not ready yet.' : 'Select a read area first.')
-      return null
-    }
     busyRef.current = true
     setBusy(true)
     try {
       const worker = await getWorker()
+      const source = sourceKind === 'screen' ? videoRef.current : imageRef.current
+      const width = sourceKind === 'screen' ? videoRef.current?.videoWidth : imageRef.current?.naturalWidth
+      const height = sourceKind === 'screen' ? videoRef.current?.videoHeight : imageRef.current?.naturalHeight
+      if (!source || !width || !height) return null
+      const frame = document.createElement('canvas')
+      frame.width = width
+      frame.height = height
+      frame.getContext('2d')!.drawImage(source, 0, 0)
+      const found = await discoverScanPanels(worker, frame)
+      if (revision !== revisionRef.current) return null
+      setRegions(found.regions)
+      const scanCanvas = found.regions.scan ? captureScanRegion(frame, width, height, found.regions.scan) : null
+      const cargoCanvas = found.regions.cargo ? captureScanRegion(frame, width, height, found.regions.cargo) : null
+      if (!scanCanvas && !cargoCanvas) { setStatus('No supported panels visible. Waiting for a new view.'); return null }
       const texts: string[] = []
       const warnings: string[] = []
       let scanSafe = false
@@ -352,6 +360,9 @@ export function ScanScreenReader({ scans, minerals, activeShipName, onAdd, onSyn
     } finally {
       busyRef.current = false
       setBusy(false)
+      const pending = pendingImageRef.current
+      pendingImageRef.current = null
+      if (pending && pending === imageRef.current && pending.complete && pending.naturalWidth) void discoverImage(pending)
     }
   }
 
@@ -482,45 +493,12 @@ export function ScanScreenReader({ scans, minerals, activeShipName, onAdd, onSyn
     return () => window.clearInterval(timer)
   }, [auto])
 
-  function pointerPosition(event: React.PointerEvent<HTMLDivElement>) {
-    const bounds = event.currentTarget.getBoundingClientRect()
-    return {
-      x: Math.min(1, Math.max(0, (event.clientX - bounds.left) / bounds.width)),
-      y: Math.min(1, Math.max(0, (event.clientY - bounds.top) / bounds.height)),
-    }
-  }
-
-  function finishDrag(event: React.PointerEvent<HTMLDivElement>) {
-    const start = dragStartRef.current
-    dragStartRef.current = null
-    setDraft(null)
-    if (!start) return
-    const next = normalizeRegion(start, pointerPosition(event))
-    if (next.width < 0.01 || next.height < 0.01) return
-    revisionRef.current += 1
-    burstRef.current?.abort()
-    setRegions((current) => ({ ...current, [target]: next }))
-    try { window.localStorage.setItem(regionKeys[target], JSON.stringify(next)) } catch { /* region stays for this session */ }
-    setStatus(`${regionLabels[target]} area saved. Use Read now or enable auto capture.`)
-  }
-
-  function clearRegion() {
-    revisionRef.current += 1
-    burstRef.current?.abort()
-    setRegions((current) => ({ ...current, [target]: null }))
-    try { window.localStorage.removeItem(regionKeys[target]) } catch { /* nothing stored */ }
-    if (target === 'cargo') discardCargo()
-    else discardScan()
-    setStatus(`${regionLabels[target]} area cleared.`)
-  }
-
   function updateLocation(value: string) {
     setLocation(value)
     try { window.localStorage.setItem(locationKey, value) } catch { /* location stays for this session */ }
   }
 
   const compositionTotal = scanForm ? scanForm.composition.reduce((sum, row) => sum + (Number(row.percent) || 0), 0) : 0
-  const anyRegion = Boolean(regions.scan || regions.cargo)
 
   return <section className="data-section scan-reader-section">
     <div className="section-toolbar"><div><h2>Scan screen reader</h2><span>Read the in-game SCAN RESULTS and CARGO panels to log scans and update your active ship's ore.</span></div><span className="table-label">{auto ? 'AUTO CAPTURE' : sourceKind === 'screen' ? 'SCREEN LIVE' : sourceKind === 'image' ? 'IMAGE' : 'OCR'}</span></div>
@@ -537,33 +515,18 @@ export function ScanScreenReader({ scans, minerals, activeShipName, onAdd, onSyn
         <label className="secondary-button scan-reader-file">Load screenshot<input type="file" accept="image/*" onChange={(event) => { loadImage(event.target.files?.[0]); event.target.value = '' }} /></label>
       </div>
     </div>
-    {sourceKind !== 'none' && <div className="scan-reader-target">
-      <span>EDITING AREA</span>
-      <div className="scan-reader-target-choices" role="radiogroup" aria-label="Read area to edit">
-        {(['scan', 'cargo'] as const).map((option) => <button type="button" role="radio" aria-checked={target === option} className={`scan-reader-target-choice ${option} ${target === option ? 'selected' : ''}`} key={option} onClick={() => setTarget(option)}>
-          <i aria-hidden="true" />{regionLabels[option]}<small>{regions[option] ? 'SET' : 'NOT SET'}</small>
-        </button>)}
-      </div>
-      <button className="text-button" type="button" disabled={!regions[target]} onClick={clearRegion}>Clear area</button>
-    </div>}
     {sourceKind !== 'none' && <div className="scan-reader-preview" style={{ width: `min(calc(100% - 28px), ${70 * sourceRatio}vh)` }}>
-      {sourceKind === 'screen' ? <video ref={videoRef} muted playsInline onLoadedMetadata={(event) => { setSourceRatio(event.currentTarget.videoWidth / event.currentTarget.videoHeight); setSourceReady(true) }} /> : <img key={imageUrl} ref={imageRef} src={imageUrl} alt="Scan source" onLoad={(event) => { setSourceRatio(event.currentTarget.naturalWidth / event.currentTarget.naturalHeight); setSourceReady(true) }} onError={() => { setSourceReady(false); setStatus('This image could not be decoded. Try a PNG or JPEG screenshot.') }} />}
-      <div
-        className="scan-reader-overlay"
-        onPointerDown={(event) => { event.currentTarget.setPointerCapture(event.pointerId); dragStartRef.current = pointerPosition(event); setDraft(null) }}
-        onPointerMove={(event) => { if (dragStartRef.current) setDraft(normalizeRegion(dragStartRef.current, pointerPosition(event))) }}
-        onPointerUp={finishDrag}
-        onPointerCancel={() => { dragStartRef.current = null; setDraft(null) }}
-      >
+      {sourceKind === 'screen' ? <video ref={videoRef} muted playsInline onLoadedMetadata={(event) => { setSourceRatio(event.currentTarget.videoWidth / event.currentTarget.videoHeight); setSourceReady(true) }} /> : <img key={imageUrl} ref={imageRef} src={imageUrl} alt="Scan source" onLoad={(event) => { setSourceRatio(event.currentTarget.naturalWidth / event.currentTarget.naturalHeight); setSourceReady(true); void discoverImage(event.currentTarget) }} onError={() => { setSourceReady(false); setStatus('This image could not be decoded. Try a PNG or JPEG screenshot.') }} />}
+      <div className="scan-reader-overlay" style={{ pointerEvents: 'none', cursor: 'default' }}>
         {(['scan', 'cargo'] as const).map((option) => {
-          const shown = option === target ? draft ?? regions[option] : regions[option]
-          return shown && <div className={`scan-reader-region ${option} ${option === target ? 'active' : ''}`} key={option} style={{ left: `${shown.x * 100}%`, top: `${shown.y * 100}%`, width: `${shown.width * 100}%`, height: `${shown.height * 100}%` }}><span>{regionLabels[option]}</span></div>
+          const shown = regions[option]
+          return shown && <div className={`scan-reader-region ${option}`} key={option} style={{ left: `${shown.x * 100}%`, top: `${shown.y * 100}%`, width: `${shown.width * 100}%`, height: `${shown.height * 100}%` }}><span>{regionLabels[option]}</span></div>
         })}
       </div>
     </div>}
     <div className="scan-reader-actions">
-      <button className="secondary-button" type="button" disabled={sourceKind === 'none' || !sourceReady || !anyRegion || busy} onClick={() => { void readNow() }}>{busy ? 'Reading…' : 'Read now'}</button>
-      <label className="scan-reader-auto"><input type="checkbox" checked={auto} disabled={sourceKind !== 'screen' || !anyRegion} onChange={(event) => setAuto(event.target.checked)} /><span>Auto fill every {autoReadIntervalMs / 1000}s</span></label>
+      <button className="secondary-button" type="button" disabled={sourceKind === 'none' || !sourceReady || busy} onClick={() => { void readNow() }}>{busy ? 'Reading…' : 'Read now'}</button>
+      <label className="scan-reader-auto"><input type="checkbox" checked={auto} disabled={sourceKind !== 'screen'} onChange={(event) => setAuto(event.target.checked)} /><span>Auto fill every {autoReadIntervalMs / 1000}s</span></label>
       {status && <span className="scan-reader-status" role="status">{status}</span>}
     </div>
     {readWarnings.length > 0 && <div className="scan-reader-warnings" role="status">{readWarnings.map((warning) => <p key={warning}>{warning}</p>)}</div>}
@@ -592,13 +555,13 @@ export function ScanScreenReader({ scans, minerals, activeShipName, onAdd, onSyn
           <div className="number-input"><input aria-label="Ore amount" type="number" min="0" step="0.01" value={row.scu} onChange={(event) => updateCargoRow(row.id, 'scu', event.target.value)} /><span>SCU</span></div>
           <button className="remove-account" type="button" aria-label="Remove ore row" onClick={() => { revisionRef.current += 1; setCargoRows((rows) => rows && rows.filter((item) => item.id !== row.id)); setCargoDirty(true) }}>×</button>
         </div>)}
-        {!cargoRows.length && <small className="scan-reader-empty">No ores read. Add them manually or adjust the cargo area.</small>}
+        {!cargoRows.length && <small className="scan-reader-empty">No ores read. Add a manual entry or wait for a complete cargo panel.</small>}
       </div>
       <div className="mining-scan-submit"><span>{activeShipName ? `Updates ore on ${activeShipName}.` : 'Select an active ship in Personal hangar first.'}</span><div className="scan-reader-review-actions"><button className="text-button" type="button" onClick={discardCargo}>Discard</button><button className="primary-button" type="submit" disabled={!activeShipName}>Update {activeShipName ?? 'ship'} cargo</button></div></div>
     </form>}
     {rawText && <div className="scan-reader-result">
       <details><summary>Recognized text</summary><pre>{rawText}</pre></details>
     </div>}
-    <div className="table-note"><span>Capture stays on this device. {sourceKind === 'screen' ? 'Panel discovery reads the full frame; subsequent readings use selected areas.' : 'Only the selected area is read.'}</span><span>OCR language data downloads on first use.</span></div>
+    <div className="table-note"><span>Capture stays on this device. Areas are discovered automatically.</span><span>{sourceKind === 'image' ? 'Screenshot preview / manual review' : 'OCR language data downloads on first use.'}</span></div>
   </section>
 }
